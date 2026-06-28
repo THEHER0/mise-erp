@@ -739,9 +739,9 @@ function Modal({ title, onClose, children, width = 560 }) {
   );
 }
 
-function Field({ label, children, error }) {
+function Field({ label, children, error, style: s = {} }) {
   return (
-    <div style={{ marginBottom: 16 }}>
+    <div style={{ marginBottom: 16, ...s }}>
       <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#374151",
         marginBottom: 5, letterSpacing: "0.02em" }}>{label}</label>
       {children}
@@ -1198,6 +1198,21 @@ function Invoices({ data, setData, showToast, currency: c = "CAD", settings }) {
   const [pdfLoading, setPdfLoading] = useState(false);
   const invoiceRef = useRef(null);
 
+  // Auto-detect overdue invoices on mount and when data changes
+  useEffect(() => {
+    const today = new Date().toISOString().slice(0, 10);
+    const hasOverdue = data.invoices.some(i => i.status === "unpaid" && i.due && i.due < today);
+    if (hasOverdue) {
+      setData(d => ({
+        ...d,
+        invoices: d.invoices.map(i =>
+          i.status === "unpaid" && i.due && i.due < today ? { ...i, status: "overdue" } : i
+        ),
+      }));
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const filtered = data.invoices.filter(i => filter === "all" ? true : i.status === filter);
   const getCustomer = id => data.customers.find(cu => cu.id === id);
   const calcSubtotal = items => items.reduce((s, it) => s + (parseFloat(it.qty) * parseFloat(it.price) || 0), 0);
@@ -1229,8 +1244,13 @@ function Invoices({ data, setData, showToast, currency: c = "CAD", settings }) {
     if (!form.date) return showToast("Set an invoice date", "error");
     const subtotal = calcSubtotal(form.items);
     const taxAmt = calcTax(subtotal, form.tax_rate || 0);
-    const newInv = { ...form, id: nextId(), status: "unpaid", subtotal, tax_amount: taxAmt, total: subtotal + taxAmt };
-    setData(d => ({ ...d, invoices: [newInv, ...d.invoices] }));
+    const total = subtotal + taxAmt;
+    const newInv = { ...form, id: nextId(), status: "unpaid", subtotal, tax_amount: taxAmt, total };
+    setData(d => ({
+      ...d,
+      invoices: [newInv, ...d.invoices],
+      customers: d.customers.map(cu => cu.id === form.customer_id ? { ...cu, balance: (cu.balance || 0) + total } : cu),
+    }));
     showToast("Invoice created");
     setModal(null);
   };
@@ -1515,8 +1535,17 @@ const EXPENSE_CATS = ["Inventory","Shipping","Software","Rent","Utilities","Mark
 function Expenses({ data, setData, showToast, currency: c = "CAD" }) {
   const [modal, setModal] = useState(false);
   const [form, setForm] = useState({});
+  const [editId, setEditId] = useState(null);
   const [search, setSearch] = useState("");
   const [catFilter, setCatFilter] = useState("all");
+
+  const exportCSV = async () => {
+    if (!isElectron) return showToast("CSV export only available in the desktop app", "error");
+    try {
+      const p = await window.electronAPI.exportCSV("expenses");
+      showToast(`Exported to ${p.split("/").pop()}`);
+    } catch (err) { showToast(`Export failed: ${err.message}`, "error"); }
+  };
 
   const filtered = data.expenses.filter(e =>
     (catFilter === "all" || e.category === catFilter) &&
@@ -1526,10 +1555,27 @@ function Expenses({ data, setData, showToast, currency: c = "CAD" }) {
   const save = () => {
     if (!form.vendor) return showToast("Vendor required", "error");
     if (!form.amount) return showToast("Amount required", "error");
-    const newE = { ...form, id: `e${Date.now()}`, amount: parseFloat(form.amount), receipt: false };
-    setData(d => ({ ...d, expenses: [newE, ...d.expenses] }));
-    showToast("Expense logged");
+    if (editId) {
+      setData(d => ({ ...d, expenses: d.expenses.map(e => e.id === editId ? { ...form, amount: parseFloat(form.amount) } : e) }));
+      showToast("Expense updated");
+    } else {
+      const newE = { ...form, id: `e${Date.now()}`, amount: parseFloat(form.amount), receipt: false };
+      setData(d => ({ ...d, expenses: [newE, ...d.expenses] }));
+      showToast("Expense logged");
+    }
     setModal(false);
+    setEditId(null);
+  };
+
+  const deleteExpense = (id) => {
+    setData(d => ({ ...d, expenses: d.expenses.filter(e => e.id !== id) }));
+    showToast("Expense deleted");
+  };
+
+  const openEdit = (e) => {
+    setForm({ ...e, amount: String(e.amount) });
+    setEditId(e.id);
+    setModal(true);
   };
 
   const catTotals = EXPENSE_CATS.reduce((acc, cat) => {
@@ -1541,7 +1587,10 @@ function Expenses({ data, setData, showToast, currency: c = "CAD" }) {
     <div>
       <PageHeader title="Expenses"
         subtitle={`${data.expenses.length} transactions · ${fmt(data.expenses.reduce((s, e) => s + e.amount, 0), c)} total`}
-        action={<Btn onClick={() => { setForm({ vendor: "", category: "Inventory", amount: "", date: new Date().toISOString().slice(0, 10), notes: "" }); setModal(true); }}>+ Log Expense</Btn>} />
+        action={<div style={{ display: "flex", gap: 8 }}>
+          <Btn variant="secondary" size="sm" onClick={exportCSV}>↓ CSV</Btn>
+          <Btn onClick={() => { setForm({ vendor: "", category: "Inventory", amount: "", date: new Date().toISOString().slice(0, 10), notes: "" }); setEditId(null); setModal(true); }}>+ Log Expense</Btn>
+        </div>} />
       <div style={{ padding: "0 32px 32px" }}>
         <div style={{ display: "flex", gap: 16, marginBottom: 20 }}>
           {["Inventory", "Rent", "Software", "Shipping"].map(cat => (
@@ -1563,6 +1612,12 @@ function Expenses({ data, setData, showToast, currency: c = "CAD" }) {
               { key: "notes", label: "Notes" },
               { key: "amount", label: "Amount", align: "right", render: v => <span style={{ fontVariantNumeric: "tabular-nums", fontWeight: 600 }}>{fmt(v, c)}</span> },
               { key: "receipt", label: "Receipt", render: v => <span style={{ color: v ? "#16a34a" : "#dc2626", fontSize: 13 }}>{v ? "✓" : "—"}</span> },
+              { key: "id", label: "", render: (v, row) => (
+                <div style={{ display: "flex", gap: 4 }}>
+                  <Btn variant="ghost" size="sm" onClick={() => openEdit(row)}>Edit</Btn>
+                  <Btn variant="ghost" size="sm" style={{ color: "#dc2626" }} onClick={() => deleteExpense(v)}>✕</Btn>
+                </div>
+              )},
             ]}
             rows={filtered}
           />
@@ -1570,7 +1625,7 @@ function Expenses({ data, setData, showToast, currency: c = "CAD" }) {
       </div>
 
       {modal && (
-        <Modal title="Log Expense" onClose={() => setModal(false)}>
+        <Modal title={editId ? "Edit Expense" : "Log Expense"} onClose={() => { setModal(false); setEditId(null); }}>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
             <Field label="Vendor"><Input value={form.vendor || ""} onChange={v => setForm({ ...form, vendor: v })} placeholder="Canada Post" /></Field>
             <Field label={`Amount (${c})`}><Input value={form.amount || ""} onChange={v => setForm({ ...form, amount: v })} type="number" placeholder="0.00" /></Field>
@@ -1579,8 +1634,8 @@ function Expenses({ data, setData, showToast, currency: c = "CAD" }) {
           </div>
           <Field label="Notes"><Textarea value={form.notes || ""} onChange={v => setForm({ ...form, notes: v })} rows={2} /></Field>
           <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
-            <Btn variant="secondary" onClick={() => setModal(false)}>Cancel</Btn>
-            <Btn onClick={save}>Log Expense</Btn>
+            <Btn variant="secondary" onClick={() => { setModal(false); setEditId(null); }}>Cancel</Btn>
+            <Btn onClick={save}>{editId ? "Save Changes" : "Log Expense"}</Btn>
           </div>
         </Modal>
       )}
@@ -1642,7 +1697,13 @@ function Inventory({ data, setData, showToast, currency: c = "CAD" }) {
               { key: "reorder", label: "Reorder At", align: "center" },
               { key: "cost", label: "Cost", align: "right", render: v => <span style={{ fontVariantNumeric: "tabular-nums" }}>{fmt(v, c)}</span> },
               { key: "price", label: "Price", align: "right", render: v => <span style={{ fontVariantNumeric: "tabular-nums" }}>{fmt(v, c)}</span> },
-              { key: "id", label: "", render: (v, row) => <Btn variant="ghost" size="sm" onClick={() => { setForm({ ...row }); setModal("edit"); }}>Edit</Btn> },
+              { key: "id", label: "", render: (v, row) => (
+                <div style={{ display: "flex", gap: 4 }}>
+                  <Btn variant="ghost" size="sm" onClick={() => { setForm({ ...row }); setModal("edit"); }}>Edit</Btn>
+                  <Btn variant="ghost" size="sm" style={{ color: "#dc2626" }}
+                    onClick={() => { if (window.confirm(`Delete "${row.name}"?`)) { setData(d => ({ ...d, inventory: d.inventory.filter(i => i.id !== v) })); showToast("Product deleted"); } }}>✕</Btn>
+                </div>
+              )},
             ]}
             rows={filtered}
           />
@@ -1691,8 +1752,23 @@ function Purchasing({ data, setData, showToast, currency: c = "CAD" }) {
   };
 
   const markReceived = po => {
-    setData(d => ({ ...d, purchase_orders: d.purchase_orders.map(p => p.id === po.id ? { ...p, status: "received" } : p) }));
-    showToast(`${po.id} marked as received`);
+    setData(d => {
+      // Update inventory stock for each PO line item (match by description to inventory name)
+      let inventory = [...d.inventory];
+      (po.items || []).forEach(line => {
+        const idx = inventory.findIndex(i =>
+          i.name.toLowerCase().includes(line.desc.toLowerCase().slice(0, 8)) ||
+          line.desc.toLowerCase().includes(i.name.toLowerCase().slice(0, 8))
+        );
+        if (idx >= 0) inventory[idx] = { ...inventory[idx], stock: (inventory[idx].stock || 0) + (parseInt(line.qty) || 0) };
+      });
+      return {
+        ...d,
+        purchase_orders: d.purchase_orders.map(p => p.id === po.id ? { ...p, status: "received", receivedAt: new Date().toISOString().slice(0, 10) } : p),
+        inventory,
+      };
+    });
+    showToast(`${po.id} received — inventory updated`);
     setDetail(null);
   };
 
@@ -1969,8 +2045,24 @@ function Reports({ data, currency: c = "CAD" }) {
     overdue: data.invoices.filter(i => i.status === "overdue").reduce((s, i) => s + i.total, 0),
   };
 
+  // Tax collected by quarter (for HST/GST filing)
+  const taxByQuarter = (() => {
+    const quarters = {};
+    data.invoices.filter(i => i.status === "paid" && i.tax_amount > 0).forEach(inv => {
+      const d = new Date(inv.date);
+      const q = `${d.getFullYear()} Q${Math.floor(d.getMonth() / 3) + 1}`;
+      if (!quarters[q]) quarters[q] = { taxCollected: 0, revenue: 0, count: 0 };
+      quarters[q].taxCollected += inv.tax_amount || 0;
+      quarters[q].revenue += inv.total || 0;
+      quarters[q].count++;
+    });
+    return Object.entries(quarters).sort((a, b) => a[0].localeCompare(b[0]));
+  })();
+  const totalTaxCollected = taxByQuarter.reduce((s, [, v]) => s + v.taxCollected, 0);
+
   const REPORTS = [
     { id: "pl", label: "Profit & Loss" },
+    { id: "tax", label: "Tax Collected" },
     { id: "ar", label: "AR Aging" },
     { id: "expenses", label: "Expenses Breakdown" },
     { id: "inventory", label: "Inventory Value" },
@@ -2008,6 +2100,49 @@ function Reports({ data, currency: c = "CAD" }) {
                   : "Operating at a loss this period.")
                 : "No revenue recorded yet."}
             </div>
+          </Card>
+        )}
+
+        {report === "tax" && (
+          <Card style={{ padding: 28, maxWidth: 600 }}>
+            <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 4 }}>Tax Collected — HST/GST Summary</div>
+            <div style={{ fontSize: 12, color: "#64748b", marginBottom: 20 }}>From paid invoices with tax applied. Use for quarterly remittance.</div>
+            {taxByQuarter.length === 0 ? (
+              <div style={{ color: "#94a3b8", fontSize: 13, padding: "20px 0" }}>No paid invoices with tax recorded yet.</div>
+            ) : (
+              <>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                  <thead>
+                    <tr>
+                      {["Quarter","Paid Invoices","Revenue","Tax Collected"].map(h => (
+                        <th key={h} style={{ textAlign: h === "Quarter" || h === "Paid Invoices" ? "left" : "right",
+                          padding: "6px 8px", fontSize: 11, color: "#64748b", borderBottom: "1px solid #e2e8f0",
+                          fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.04em" }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {taxByQuarter.map(([q, v]) => (
+                      <tr key={q} style={{ borderBottom: "1px solid #f1f5f9" }}>
+                        <td style={{ padding: "10px 8px", fontWeight: 600 }}>{q}</td>
+                        <td style={{ padding: "10px 8px" }}>{v.count}</td>
+                        <td style={{ padding: "10px 8px", textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{fmt(v.revenue, c)}</td>
+                        <td style={{ padding: "10px 8px", textAlign: "right", fontVariantNumeric: "tabular-nums", color: "#6366f1", fontWeight: 600 }}>{fmt(v.taxCollected, c)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                  <tfoot>
+                    <tr style={{ borderTop: "2px solid #1a1d23" }}>
+                      <td style={{ padding: "10px 8px", fontWeight: 700 }} colSpan={3}>Total Tax to Remit</td>
+                      <td style={{ padding: "10px 8px", textAlign: "right", fontVariantNumeric: "tabular-nums", fontWeight: 700, fontSize: 16, color: "#6366f1" }}>{fmt(totalTaxCollected, c)}</td>
+                    </tr>
+                  </tfoot>
+                </table>
+                <div style={{ marginTop: 16, padding: "12px 16px", background: "#f0f4ff", borderRadius: 8, fontSize: 12, color: "#4338ca" }}>
+                  💡 In Canada, HST/GST remittance is typically quarterly. File your GST34 return with CRA by the deadline for each period.
+                </div>
+              </>
+            )}
           </Card>
         )}
 
