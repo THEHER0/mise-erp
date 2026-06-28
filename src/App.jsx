@@ -660,59 +660,177 @@ function InfoRow({ label, value }) {
 }
 
 // ─── DASHBOARD ────────────────────────────────────────────────────────────────
+// ─── MINI CHARTS ──────────────────────────────────────────────────────────────
+function BarChart({ data: bars, height = 80, color = "#6366f1", currency = "CAD" }) {
+  const max = Math.max(...bars.map(b => b.value), 1);
+  const W = 320, H = height, pad = 28, barW = Math.floor((W - pad * 2) / bars.length) - 4;
+  return (
+    <svg width="100%" viewBox={`0 0 ${W} ${H + 24}`} style={{ overflow: "visible" }}>
+      {bars.map((b, i) => {
+        const bh = Math.max(3, (b.value / max) * H);
+        const x = pad + i * ((W - pad * 2) / bars.length) + 2;
+        const y = H - bh;
+        return (
+          <g key={i}>
+            <rect x={x} y={y} width={barW} height={bh} rx={3}
+              fill={i === bars.length - 1 ? color : color + "80"} />
+            <text x={x + barW / 2} y={H + 14} textAnchor="middle"
+              fill="#94a3b8" fontSize={9} fontFamily="system-ui">{b.label}</text>
+            {b.value > 0 && (
+              <title>{b.label}: {fmt(b.value, currency)}</title>
+            )}
+          </g>
+        );
+      })}
+      {[0, 0.5, 1].map(pct => (
+        <line key={pct} x1={pad} x2={W - pad} y1={H - pct * H} y2={H - pct * H}
+          stroke="#f1f5f9" strokeWidth={1} />
+      ))}
+    </svg>
+  );
+}
+
+function DonutChart({ slices, size = 100 }) {
+  const total = slices.reduce((s, sl) => s + sl.value, 0);
+  if (total === 0) return <div style={{ width: size, height: size, borderRadius: "50%", background: "#f1f5f9" }} />;
+  let angle = -90;
+  const cx = size / 2, cy = size / 2, r = size * 0.38, inner = size * 0.24;
+  const paths = slices.map(sl => {
+    const pct = sl.value / total;
+    const startAngle = angle;
+    angle += pct * 360;
+    const endAngle = angle;
+    const start = polarToCart(cx, cy, r, startAngle);
+    const end = polarToCart(cx, cy, r, endAngle);
+    const innerStart = polarToCart(cx, cy, inner, endAngle);
+    const innerEnd = polarToCart(cx, cy, inner, startAngle);
+    const largeArc = pct > 0.5 ? 1 : 0;
+    return { ...sl, d: `M ${start.x} ${start.y} A ${r} ${r} 0 ${largeArc} 1 ${end.x} ${end.y} L ${innerStart.x} ${innerStart.y} A ${inner} ${inner} 0 ${largeArc} 0 ${innerEnd.x} ${innerEnd.y} Z` };
+  });
+  return (
+    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
+      {paths.map((p, i) => <path key={i} d={p.d} fill={p.color}><title>{p.label}: {Math.round((p.value / total) * 100)}%</title></path>)}
+    </svg>
+  );
+}
+
+function polarToCart(cx, cy, r, angleDeg) {
+  const rad = (angleDeg * Math.PI) / 180;
+  return { x: cx + r * Math.cos(rad), y: cy + r * Math.sin(rad) };
+}
+
 function Dashboard({ data, currency }) {
+  const c = currency;
   const unpaidTotal = data.invoices.filter(i => i.status === "unpaid").reduce((s, i) => s + i.total, 0);
   const overdueTotal = data.invoices.filter(i => i.status === "overdue").reduce((s, i) => s + i.total, 0);
   const paidTotal = data.invoices.filter(i => i.status === "paid").reduce((s, i) => s + i.total, 0);
   const expTotal = data.expenses.reduce((s, e) => s + e.amount, 0);
+  const netProfit = paidTotal - expTotal;
   const lowStock = data.inventory.filter(i => i.stock <= i.reorder);
   const recentInv = [...data.invoices].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 5);
-  const getCustomer = id => data.customers.find(c => c.id === id);
+  const getCustomer = id => data.customers.find(cu => cu.id === id);
   const openPOs = data.purchase_orders.filter(p => p.status === "ordered");
-  const c = currency;
+
+  // Revenue by month (last 6 months)
+  const monthBars = (() => {
+    const months = [];
+    const now = new Date();
+    for (let i = 5; i >= 0; i--) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+      const label = d.toLocaleDateString("en-CA", { month: "short" });
+      const value = data.invoices
+        .filter(inv => inv.status === "paid" && inv.date?.startsWith(key))
+        .reduce((s, inv) => s + inv.total, 0);
+      months.push({ label, value });
+    }
+    return months;
+  })();
+
+  // Expense breakdown (top categories)
+  const CHART_COLORS = ["#6366f1","#8b5cf6","#06b6d4","#10b981","#f59e0b","#ef4444","#64748b"];
+  const expByCategory = (() => {
+    const cats = {};
+    data.expenses.forEach(e => { cats[e.category] = (cats[e.category] || 0) + e.amount; });
+    return Object.entries(cats)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([label, value], i) => ({ label, value, color: CHART_COLORS[i] }));
+  })();
 
   return (
     <div>
       <PageHeader title="Dashboard"
-        subtitle={`Welcome back — ${new Date().toLocaleDateString("en-CA", { weekday: "long", year: "numeric", month: "long", day: "numeric" })}`} />
+        subtitle={new Date().toLocaleDateString("en-CA", { weekday: "long", year: "numeric", month: "long", day: "numeric" })} />
       <div style={{ padding: "0 32px 32px" }}>
+
         {/* KPI Row */}
-        <div style={{ display: "flex", gap: 16, marginBottom: 24, flexWrap: "wrap" }}>
-          <StatCard label="Receivables" value={fmt(unpaidTotal + overdueTotal, c)} sub={`${data.invoices.filter(i => i.status !== "paid").length} open invoices`} accent />
-          <StatCard label="Overdue" value={fmt(overdueTotal, c)} sub="Past due date" />
-          <StatCard label="Collected (MTD)" value={fmt(paidTotal, c)} sub="Paid invoices" />
-          <StatCard label="Expenses (MTD)" value={fmt(expTotal, c)} sub={`${data.expenses.length} transactions`} />
+        <div style={{ display: "flex", gap: 14, marginBottom: 20, flexWrap: "wrap" }}>
+          <StatCard label="Receivables" value={fmt(unpaidTotal + overdueTotal, c)} sub={`${data.invoices.filter(i => i.status !== "paid").length} open`} accent />
+          <StatCard label="Overdue" value={fmt(overdueTotal, c)} sub={data.invoices.filter(i=>i.status==="overdue").length + " invoice(s)"} />
+          <StatCard label="Collected" value={fmt(paidTotal, c)} sub="Paid invoices" />
+          <StatCard label="Expenses" value={fmt(expTotal, c)} sub={data.expenses.length + " transactions"} />
+          <StatCard label="Net Profit" value={fmt(netProfit, c)} sub={paidTotal > 0 ? `${((netProfit/paidTotal)*100).toFixed(1)}% margin` : "—"} accent={netProfit > 0} />
         </div>
 
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 340px", gap: 20 }}>
+        {/* Charts row */}
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 16 }}>
+          <Card style={{ padding: 20 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 12 }}>Revenue — Last 6 Months</div>
+            <BarChart data={monthBars} color="#6366f1" currency={c} />
+          </Card>
+
+          <Card style={{ padding: 20 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 12 }}>Expenses by Category</div>
+            {expByCategory.length === 0
+              ? <div style={{ color: "#94a3b8", fontSize: 13 }}>No expenses recorded.</div>
+              : (
+                <div style={{ display: "flex", gap: 16, alignItems: "center" }}>
+                  <DonutChart slices={expByCategory} size={100} />
+                  <div style={{ flex: 1 }}>
+                    {expByCategory.map((sl, i) => (
+                      <div key={i} style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 5, alignItems: "center" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                          <div style={{ width: 8, height: 8, borderRadius: 2, background: sl.color, flexShrink: 0 }} />
+                          <span style={{ color: "#374151" }}>{sl.label}</span>
+                        </div>
+                        <span style={{ color: "#64748b", fontVariantNumeric: "tabular-nums" }}>{fmt(sl.value, c)}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )
+            }
+          </Card>
+        </div>
+
+        {/* Main grid */}
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 320px", gap: 16 }}>
           <Card>
-            <div style={{ padding: "16px 20px", borderBottom: "1px solid #f1f5f9",
-              display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <div style={{ fontSize: 14, fontWeight: 700 }}>Recent Invoices</div>
-            </div>
+            <div style={{ padding: "14px 20px", borderBottom: "1px solid #f1f5f9", fontSize: 13, fontWeight: 700 }}>Recent Invoices</div>
             <Table
               columns={[
-                { key: "id", label: "Invoice" },
+                { key: "id", label: "Invoice", render: v => <span style={{ color: "#6366f1", fontWeight: 600 }}>{v}</span> },
                 { key: "customer_id", label: "Customer", render: v => getCustomer(v)?.name || v },
                 { key: "date", label: "Date", render: v => fmtDate(v) },
-                { key: "total", label: "Amount", align: "right", render: v => fmt(v, c) },
+                { key: "total", label: "Amount", align: "right", render: v => <span style={{ fontVariantNumeric: "tabular-nums" }}>{fmt(v, c)}</span> },
                 { key: "status", label: "Status", render: v => statusBadge(v, INV_STATUS) },
               ]}
               rows={recentInv}
             />
           </Card>
 
-          <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
             <Card style={{ padding: 20 }}>
-              <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 14 }}>⚠ Needs Attention</div>
+              <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 12 }}>Needs Attention</div>
               {overdueTotal > 0 && (
-                <AlertRow icon="◈" color="#dc2626" label={`${data.invoices.filter(i => i.status === "overdue").length} overdue invoice(s)`} val={fmt(overdueTotal, c)} />
+                <AlertRow icon="◈" color="#dc2626" label={`${data.invoices.filter(i=>i.status==="overdue").length} overdue`} val={fmt(overdueTotal, c)} />
               )}
-              {lowStock.map(item => (
-                <AlertRow key={item.id} icon="▦" color="#f59e0b" label={`Low stock: ${item.name}`} val={`${item.stock} left`} />
+              {lowStock.slice(0, 3).map(item => (
+                <AlertRow key={item.id} icon="▦" color="#f59e0b" label={`Low: ${item.name}`} val={`${item.stock} left`} />
               ))}
-              {openPOs.map(po => (
-                <AlertRow key={po.id} icon="▷" color="#6366f1" label={`PO ${po.id} in transit`} val={fmtDate(po.expected)} />
+              {openPOs.slice(0, 2).map(po => (
+                <AlertRow key={po.id} icon="▷" color="#6366f1" label={`${po.id} arriving`} val={fmtDate(po.expected)} />
               ))}
               {overdueTotal === 0 && lowStock.length === 0 && openPOs.length === 0 && (
                 <div style={{ color: "#16a34a", fontSize: 13 }}>✓ All clear</div>
@@ -720,18 +838,18 @@ function Dashboard({ data, currency }) {
             </Card>
 
             <Card style={{ padding: 20 }}>
-              <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 14 }}>Open Projects</div>
+              <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 12 }}>Open Projects</div>
               {data.projects.filter(p => p.status !== "done").length === 0
                 ? <div style={{ color: "#94a3b8", fontSize: 13 }}>No active projects.</div>
                 : data.projects.filter(p => p.status !== "done").map(p => (
                   <div key={p.id} style={{ marginBottom: 12 }}>
-                    <div style={{ fontSize: 13, fontWeight: 500 }}>{p.name}</div>
-                    <div style={{ height: 5, background: "#f1f5f9", borderRadius: 3, marginTop: 5 }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: "#374151" }}>{p.name}</div>
+                    <div style={{ height: 4, background: "#f1f5f9", borderRadius: 2, marginTop: 4 }}>
                       <div style={{ height: "100%", width: `${Math.min((p.spent / p.budget) * 100, 100)}%`,
-                        background: p.spent > p.budget ? "#dc2626" : "#6366f1", borderRadius: 3 }} />
+                        background: p.spent > p.budget ? "#dc2626" : "#6366f1", borderRadius: 2 }} />
                     </div>
                     <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 3 }}>
-                      {fmt(p.spent, c)} of {fmt(p.budget, c)} · Due {fmtDate(p.due)}
+                      {fmt(p.spent, c)} / {fmt(p.budget, c)} · Due {fmtDate(p.due)}
                     </div>
                   </div>
                 ))

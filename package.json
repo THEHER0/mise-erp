@@ -10,7 +10,11 @@
   "scripts": {
     "dev": "concurrently \"vite\" \"wait-on http://localhost:5173 && electron .\"",
     "build": "vite build",
-    "dist": "npm run build && electron-builder"
+    "dist": "npm run build && electron-builder",
+    "dist:signed": "npm run build && source .env.build 2>/dev/null; electron-builder",
+    "icons": "bash scripts/make-icns.sh",
+    "setup:google": "bash scripts/setup-google-cloud.sh",
+    "setup:signing": "bash scripts/setup-apple-signing.sh"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.2.1",

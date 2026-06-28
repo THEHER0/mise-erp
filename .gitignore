@@ -31,3 +31,9 @@ yarn-error.log*
 
 # electron-store data (local user data, not committed)
 # ~/Library/Application Support/mise-erp/
+
+# Secrets — never commit these
+.env.build
+*.p12
+*.cer
+*.mobileprovision
