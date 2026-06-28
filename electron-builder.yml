@@ -41,6 +41,6 @@ dmg:
 
 publish:
   provider: github
-  owner: mise-erp
+  owner: THEHER0
   repo: mise-erp
   private: false

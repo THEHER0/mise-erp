@@ -400,9 +400,12 @@ export default function ERP() {
       {/* Sidebar */}
       <aside style={{ width: sidebarOpen ? 220 : 60, background: "#151920", color: "#e2e8f0",
         display: "flex", flexDirection: "column", transition: "width 0.2s", flexShrink: 0, zIndex: 10 }}>
-        <div style={{ padding: sidebarOpen ? "20px 20px 16px" : "20px 12px 16px",
+        {/* Traffic light spacer — keeps buttons clear of sidebar content */}
+        <div style={{ height: 52, WebkitAppRegion: "drag", flexShrink: 0 }} />
+
+        <div style={{ padding: sidebarOpen ? "0 20px 16px" : "0 12px 16px",
           borderBottom: "1px solid #252c3a", display: "flex", alignItems: "center", gap: 10,
-          WebkitAppRegion: "drag", // allow dragging window from sidebar header
+          WebkitAppRegion: "drag",
         }}>
           <div style={{ width: 30, height: 30, background: "#6366f1", borderRadius: 6,
             display: "flex", alignItems: "center", justifyContent: "center",
@@ -912,6 +915,27 @@ function Invoices({ data, setData, showToast, currency: c = "CAD" }) {
     }
   };
 
+  const [emailLoading, setEmailLoading] = useState(false);
+  const emailInvoice = async (inv) => {
+    if (!isElectron) return showToast("Email is only available in the desktop app", "error");
+    const customer = getCustomer(inv.customer_id);
+    if (!customer?.email) return showToast("Customer has no email address", "error");
+    setEmailLoading(true);
+    try {
+      await window.electronAPI.emailInvoice({
+        invoiceId: inv.id,
+        toEmail: customer.email,
+        subject: `Invoice ${inv.id} from ${data.company?.name || "Mise ERP"}`,
+        bodyHtml: `<p>Hi ${customer.name},</p><p>Please find attached invoice <strong>${inv.id}</strong> for <strong>${fmt(inv.total, c)}</strong>, due ${fmtDate(inv.due)}.</p><p>Thank you for your business.</p><p style="color:#999;font-size:12px">Sent via Mise ERP</p>`,
+      });
+      showToast(`Invoice emailed to ${customer.email}`);
+    } catch (err) {
+      showToast(err.message.includes("Not connected") ? "Connect Google in Integrations first" : `Email failed: ${err.message}`, "error");
+    } finally {
+      setEmailLoading(false);
+    }
+  };
+
   const addItem = () => setForm(f => ({ ...f, items: [...f.items, { desc: "", qty: 1, price: 0 }] }));
   const updateItem = (idx, field, val) => setForm(f => ({ ...f, items: f.items.map((it, i) => i === idx ? { ...it, [field]: val } : it) }));
   const removeItem = idx => setForm(f => ({ ...f, items: f.items.filter((_, i) => i !== idx) }));
@@ -940,6 +964,9 @@ function Invoices({ data, setData, showToast, currency: c = "CAD" }) {
               <h2 style={{ margin: 0, fontSize: 16, fontWeight: 700 }}>{detail.id}</h2>
               <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
                 {detail.status !== "paid" && <Btn size="sm" onClick={() => markPaid(detail)}>Mark as Paid</Btn>}
+                <Btn variant="secondary" size="sm" onClick={() => emailInvoice(detail)} style={{ opacity: emailLoading ? 0.6 : 1 }}>
+                  {emailLoading ? "Sending…" : "✉ Email Invoice"}
+                </Btn>
                 <Btn variant="secondary" size="sm" onClick={() => downloadPDF(detail)} style={{ opacity: pdfLoading ? 0.6 : 1 }}>
                   {pdfLoading ? "Generating…" : "↓ Download PDF"}
                 </Btn>
@@ -1643,80 +1670,214 @@ function ReportLine({ label, value, bold, accent, positive, negative, c = "CAD" 
 
 // ─── INTEGRATIONS ─────────────────────────────────────────────────────────────
 function Integrations({ showToast }) {
-  const [connected, setConnected] = useState({ gmail: false, gdrive: false, dropbox: false, quickbooks: false, shopify: false, stripe: false });
+  const [googleAuth, setGoogleAuth] = useState({ connected: false, email: null });
+  const [googleLoading, setGoogleLoading] = useState(false);
+  const [backups, setBackups] = useState([]);
+  const [backupLoading, setBackupLoading] = useState(false);
+  const [showBackups, setShowBackups] = useState(false);
+  const [placeholderWarning, setPlaceholderWarning] = useState(false);
 
-  const toggle = (key, label) => {
-    setConnected(c => ({ ...c, [key]: !c[key] }));
-    showToast(connected[key] ? `${label} disconnected` : `${label} connected`, connected[key] ? "error" : "success");
+  // Check auth status on mount
+  useEffect(() => {
+    if (!isElectron) return;
+    window.electronAPI.getAuthStatus().then(setGoogleAuth).catch(() => {});
+    // Listen for auth connected event (from OAuth redirect)
+    window.electronAPI.onAuthConnected(info => setGoogleAuth({ connected: true, email: info.email }));
+  }, []);
+
+  // Check if credentials are still placeholders
+  const connectGoogle = async () => {
+    setGoogleLoading(true);
+    try {
+      const result = await window.electronAPI.connectGoogle();
+      setGoogleAuth({ connected: true, email: result.email });
+      showToast(`Connected as ${result.email}`);
+    } catch (err) {
+      if (err.message?.includes("YOUR_CLIENT_ID")) {
+        setPlaceholderWarning(true);
+        showToast("Add your Google Client ID to main.js first", "error");
+      } else {
+        showToast(`Connection failed: ${err.message}`, "error");
+      }
+    } finally {
+      setGoogleLoading(false);
+    }
   };
 
-  const INTEGRATIONS = [
-    {
-      category: "Email",
-      items: [
-        { key: "gmail", label: "Gmail", desc: "Send invoices, receive purchase orders, attach documents directly to records.", icon: "✉" },
-      ],
-    },
-    {
-      category: "Cloud Storage",
-      items: [
-        { key: "gdrive", label: "Google Drive", desc: "Attach receipts, save invoices as PDFs, and sync documents to your Drive folders.", icon: "△" },
-        { key: "dropbox", label: "Dropbox", desc: "Upload expense receipts and documents directly from or to your Dropbox.", icon: "◻" },
-      ],
-    },
-    {
-      category: "Accounting",
-      items: [
-        { key: "quickbooks", label: "QuickBooks Online", desc: "Two-way sync of invoices, expenses, and customers with your QBO account.", icon: "⬟" },
-      ],
-    },
-    {
-      category: "Sales & Payments",
-      items: [
-        { key: "shopify", label: "Shopify", desc: "Pull online orders into Invoicing and sync inventory levels automatically.", icon: "◈" },
-        { key: "stripe", label: "Stripe", desc: "Mark invoices paid automatically when payment clears. View payment history.", icon: "⬡" },
-      ],
-    },
+  const disconnectGoogle = async () => {
+    await window.electronAPI.disconnectGoogle();
+    setGoogleAuth({ connected: false, email: null });
+    setBackups([]);
+    showToast("Google disconnected");
+  };
+
+  const runBackup = async () => {
+    setBackupLoading(true);
+    try {
+      const result = await window.electronAPI.driveBackup();
+      showToast(`Backup saved: ${result.fileName}`);
+      loadBackups();
+    } catch (err) {
+      showToast(`Backup failed: ${err.message}`, "error");
+    } finally {
+      setBackupLoading(false);
+    }
+  };
+
+  const loadBackups = async () => {
+    try {
+      const list = await window.electronAPI.driveListBackups();
+      setBackups(list);
+      setShowBackups(true);
+    } catch (err) {
+      showToast(`Could not load backups: ${err.message}`, "error");
+    }
+  };
+
+  const restoreBackup = async (fileId, fileName) => {
+    if (!window.confirm(`Restore from "${fileName}"? This will overwrite your current data.`)) return;
+    try {
+      await window.electronAPI.driveRestore(fileId);
+      showToast("Data restored — please restart the app");
+    } catch (err) {
+      showToast(`Restore failed: ${err.message}`, "error");
+    }
+  };
+
+  const PLACEHOLDER_ITEMS = [
+    { key: "dropbox", label: "Dropbox", desc: "Upload expense receipts and documents directly from or to your Dropbox.", icon: "◻", category: "Cloud Storage" },
+    { key: "quickbooks", label: "QuickBooks Online", desc: "Two-way sync of invoices, expenses, and customers with your QBO account.", icon: "⬟", category: "Accounting" },
+    { key: "shopify", label: "Shopify", desc: "Pull online orders into Invoicing and sync inventory levels automatically.", icon: "◈", category: "Sales & Payments" },
+    { key: "stripe", label: "Stripe", desc: "Mark invoices paid automatically when payment clears. View payment history.", icon: "⬡", category: "Sales & Payments" },
   ];
 
   return (
     <div>
       <PageHeader title="Integrations" subtitle="Connect your tools — your data stays in one place" />
       <div style={{ padding: "0 32px 32px" }}>
+
+        {placeholderWarning && (
+          <div style={{ background: "#fefce8", border: "1px solid #fde68a", borderRadius: 10, padding: "14px 20px", marginBottom: 20, fontSize: 13, color: "#92400e" }}>
+            <strong>Setup required:</strong> To enable Google integration, create an OAuth credential at{" "}
+            <span style={{ fontFamily: "monospace", background: "#fef08a", padding: "1px 6px", borderRadius: 4 }}>
+              console.cloud.google.com
+            </span>{" "}
+            (Desktop app type), then paste your{" "}
+            <code>GOOGLE_CLIENT_ID</code> and <code>GOOGLE_CLIENT_SECRET</code> into <code>main.js</code>.
+          </div>
+        )}
+
         <div style={{ background: "#f0f0ff", border: "1px solid #c7d2fe", borderRadius: 10, padding: "14px 20px", marginBottom: 24, fontSize: 13, color: "#4338ca" }}>
-          <strong>Note:</strong> Connections below open an OAuth authorization flow in your browser. Your credentials are never stored in this app — only your authorization token is saved.
+          <strong>Privacy:</strong> OAuth tokens are stored locally on your Mac only. Your credentials are never sent to Mise servers.
         </div>
 
-        {INTEGRATIONS.map(group => (
-          <div key={group.category} style={{ marginBottom: 28 }}>
-            <div style={{ fontSize: 11, fontWeight: 700, color: "#94a3b8", letterSpacing: "0.08em",
-              textTransform: "uppercase", marginBottom: 12 }}>{group.category}</div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: 14 }}>
-              {group.items.map(item => (
-                <Card key={item.key} style={{ padding: 20, display: "flex", gap: 16, alignItems: "flex-start",
-                  border: connected[item.key] ? "1px solid #a5b4fc" : "1px solid #e8eaed" }}>
-                  <div style={{ width: 40, height: 40, borderRadius: 8,
-                    background: connected[item.key] ? "#ede9fe" : "#f8f9fb",
-                    display: "flex", alignItems: "center", justifyContent: "center",
-                    fontSize: 18, flexShrink: 0, color: connected[item.key] ? "#6366f1" : "#94a3b8" }}>
-                    {item.icon}
+        {/* ── Google (Gmail + Drive) ── */}
+        <div style={{ marginBottom: 28 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: "#94a3b8", letterSpacing: "0.08em",
+            textTransform: "uppercase", marginBottom: 12 }}>Google</div>
+          <Card style={{ padding: 24, border: googleAuth.connected ? "1px solid #a5b4fc" : "1px solid #e8eaed" }}>
+            <div style={{ display: "flex", gap: 16, alignItems: "flex-start" }}>
+              {/* G logo */}
+              <div style={{ width: 48, height: 48, borderRadius: 10,
+                background: googleAuth.connected ? "#ede9fe" : "#f8f9fb",
+                display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill={googleAuth.connected ? "#4285F4" : "#94a3b8"}/>
+                  <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill={googleAuth.connected ? "#34A853" : "#94a3b8"}/>
+                  <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z" fill={googleAuth.connected ? "#FBBC05" : "#94a3b8"}/>
+                  <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill={googleAuth.connected ? "#EA4335" : "#94a3b8"}/>
+                </svg>
+              </div>
+
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                  <span style={{ fontWeight: 700, fontSize: 15 }}>Google — Gmail + Drive</span>
+                  {googleAuth.connected && (
+                    <span style={{ fontSize: 11, color: "#16a34a", fontWeight: 600, background: "#dcfce7", padding: "2px 8px", borderRadius: 10 }}>
+                      Connected
+                    </span>
+                  )}
+                </div>
+                {googleAuth.connected ? (
+                  <div style={{ fontSize: 13, color: "#64748b", marginBottom: 16 }}>
+                    Signed in as <strong style={{ color: "#374151" }}>{googleAuth.email}</strong>
                   </div>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
-                      <span style={{ fontWeight: 700, fontSize: 14 }}>{item.label}</span>
-                      {connected[item.key] && <span style={{ fontSize: 11, color: "#16a34a", fontWeight: 600, background: "#dcfce7", padding: "2px 8px", borderRadius: 10 }}>Connected</span>}
-                    </div>
-                    <div style={{ fontSize: 12, color: "#64748b", lineHeight: 1.5, marginBottom: 12 }}>{item.desc}</div>
-                    <Btn variant={connected[item.key] ? "danger" : "primary"} size="sm"
-                      onClick={() => toggle(item.key, item.label)}>
-                      {connected[item.key] ? "Disconnect" : "Connect"}
+                ) : (
+                  <div style={{ fontSize: 13, color: "#64748b", lineHeight: 1.6, marginBottom: 16 }}>
+                    <strong>Gmail:</strong> Email invoices directly to customers with PDF attachments.<br/>
+                    <strong>Drive:</strong> Back up your ERP data to Google Drive and restore with one click.
+                  </div>
+                )}
+
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  {googleAuth.connected ? (
+                    <>
+                      <Btn variant="secondary" size="sm" onClick={runBackup} style={{ opacity: backupLoading ? 0.6 : 1 }}>
+                        {backupLoading ? "Backing up…" : "↑ Backup to Drive"}
+                      </Btn>
+                      <Btn variant="ghost" size="sm" onClick={loadBackups}>
+                        View Backups
+                      </Btn>
+                      <Btn variant="danger" size="sm" onClick={disconnectGoogle}>
+                        Disconnect
+                      </Btn>
+                    </>
+                  ) : (
+                    <Btn onClick={connectGoogle} style={{ opacity: googleLoading ? 0.6 : 1 }}>
+                      {googleLoading ? "Opening browser…" : "Connect Google"}
                     </Btn>
+                  )}
+                </div>
+
+                {/* Backup list */}
+                {showBackups && backups.length > 0 && (
+                  <div style={{ marginTop: 16, padding: 14, background: "#f8f9fb", borderRadius: 8 }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: "#374151", marginBottom: 10 }}>
+                      Drive Backups ({backups.length})
+                    </div>
+                    {backups.map(b => (
+                      <div key={b.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center",
+                        padding: "7px 0", borderBottom: "1px solid #f1f5f9", fontSize: 12 }}>
+                        <span style={{ color: "#64748b" }}>{b.name}</span>
+                        <Btn variant="ghost" size="sm" onClick={() => restoreBackup(b.id, b.name)}>
+                          Restore
+                        </Btn>
+                      </div>
+                    ))}
                   </div>
-                </Card>
-              ))}
+                )}
+                {showBackups && backups.length === 0 && (
+                  <div style={{ marginTop: 12, fontSize: 12, color: "#94a3b8" }}>No backups found in Drive.</div>
+                )}
+              </div>
             </div>
+          </Card>
+        </div>
+
+        {/* ── Coming soon ── */}
+        <div>
+          <div style={{ fontSize: 11, fontWeight: 700, color: "#94a3b8", letterSpacing: "0.08em",
+            textTransform: "uppercase", marginBottom: 12 }}>Coming Soon</div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 14 }}>
+            {PLACEHOLDER_ITEMS.map(item => (
+              <Card key={item.key} style={{ padding: 20, display: "flex", gap: 16, alignItems: "flex-start", opacity: 0.6 }}>
+                <div style={{ width: 40, height: 40, borderRadius: 8, background: "#f8f9fb",
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  fontSize: 18, flexShrink: 0, color: "#94a3b8" }}>
+                  {item.icon}
+                </div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                    <span style={{ fontWeight: 700, fontSize: 14 }}>{item.label}</span>
+                    <span style={{ fontSize: 10, color: "#94a3b8", fontWeight: 600, background: "#f1f5f9", padding: "2px 8px", borderRadius: 10, textTransform: "uppercase" }}>Soon</span>
+                  </div>
+                  <div style={{ fontSize: 12, color: "#94a3b8", lineHeight: 1.5 }}>{item.desc}</div>
+                </div>
+              </Card>
+            ))}
           </div>
-        ))}
+        </div>
+
       </div>
     </div>
   );
