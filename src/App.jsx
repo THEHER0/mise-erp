@@ -314,6 +314,8 @@ export default function ERP() {
   const [updateInfo, setUpdateInfo] = useState(null); // { version, type: 'available'|'downloaded' }
   const [licenseStatus, setLicenseStatus] = useState(null); // { licensed, trial, daysLeft }
   const [showLicenseModal, setShowLicenseModal] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
 
   // ── Load from electron-store on mount ──
   useEffect(() => {
@@ -350,6 +352,20 @@ export default function ERP() {
     window.electronAPI.onUpdateAvailable(info => setUpdateInfo({ ...info, type: "available" }));
     window.electronAPI.onUpdateDownloaded(info => setUpdateInfo({ ...info, type: "downloaded" }));
     return () => window.electronAPI.removeUpdateListeners();
+  }, []);
+
+  // ── Global Cmd+K search ──
+  useEffect(() => {
+    const handler = (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
+        e.preventDefault();
+        setSearchQuery("");
+        setSearchOpen(s => !s);
+      }
+      if (e.key === "Escape") setSearchOpen(false);
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
   }, []);
 
   // ── Persist to electron-store on every data change ──
@@ -432,7 +448,22 @@ export default function ERP() {
           )}
         </div>
 
-        <nav style={{ flex: 1, padding: "12px 0", overflowY: "auto" }}>
+        {/* Search button */}
+        <button onClick={() => { setSearchQuery(""); setSearchOpen(true); }}
+          style={{ display: "flex", alignItems: "center", gap: 8, margin: "8px 12px",
+            background: "#0f1520", border: "1px solid #252c3a", borderRadius: 6,
+            color: "#64748b", cursor: "pointer", padding: sidebarOpen ? "7px 10px" : "7px 0",
+            fontSize: 12, justifyContent: sidebarOpen ? "flex-start" : "center" }}>
+          <span style={{ fontSize: 13 }}>⌕</span>
+          {sidebarOpen && (
+            <>
+              <span style={{ flex: 1, textAlign: "left" }}>Search…</span>
+              <kbd style={{ fontSize: 10, padding: "1px 4px", background: "#1a2035", borderRadius: 3 }}>⌘K</kbd>
+            </>
+          )}
+        </button>
+
+        <nav style={{ flex: 1, padding: "4px 0", overflowY: "auto" }}>
           {MODULES.map(m => (
             <button key={m.id} onClick={() => setActive(m.id)}
               style={{ display: "flex", alignItems: "center", gap: 10, width: "100%",
@@ -446,6 +477,24 @@ export default function ERP() {
             </button>
           ))}
         </nav>
+
+        {/* Version + license badge */}
+        {sidebarOpen && (
+          <div style={{ padding: "10px 20px", borderTop: "1px solid #252c3a", fontSize: 11, color: "#475569" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+              <span>Mise ERP v0.9.0</span>
+              {licenseStatus && (
+                <span style={{
+                  padding: "2px 7px", borderRadius: 99, fontSize: 10, fontWeight: 700,
+                  background: licenseStatus.licensed ? "#1a2e1a" : "#1e1b4b",
+                  color: licenseStatus.licensed ? "#86efac" : "#a5b4fc",
+                }}>
+                  {licenseStatus.licensed ? "✓ Licensed" : licenseStatus.trial ? `Trial ${licenseStatus.daysLeft}d` : "Expired"}
+                </span>
+              )}
+            </div>
+          </div>
+        )}
 
         <button onClick={() => setSidebarOpen(!sidebarOpen)}
           style={{ padding: "12px 0", background: "#1e2530", border: "none", color: "#64748b",
@@ -513,8 +562,66 @@ export default function ERP() {
             if (isElectron) window.electronAPI.setSettings(s);
           }}
           onOpenLicense={() => setShowLicenseModal(true)}
+          onNavigate={(module) => setActive(module)}
         />
       </main>
+
+      {/* Global Search Palette */}
+      {searchOpen && data && (
+        <div onClick={() => setSearchOpen(false)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 2000, display: "flex", alignItems: "flex-start", justifyContent: "center", paddingTop: 80 }}>
+          <div onClick={e => e.stopPropagation()} style={{ width: 560, background: "#1a2035", borderRadius: 12, boxShadow: "0 20px 60px rgba(0,0,0,0.5)", overflow: "hidden" }}>
+            <div style={{ display: "flex", alignItems: "center", padding: "14px 20px", borderBottom: "1px solid #252c3a", gap: 10 }}>
+              <span style={{ color: "#6366f1", fontSize: 16 }}>⌕</span>
+              <input
+                autoFocus
+                value={searchQuery}
+                onChange={e => setSearchQuery(e.target.value)}
+                placeholder="Search customers, invoices, inventory…"
+                style={{ flex: 1, background: "transparent", border: "none", outline: "none", color: "#e2e8f0", fontSize: 15, fontFamily: "system-ui" }}
+              />
+              <kbd style={{ fontSize: 10, color: "#475569", padding: "2px 6px", background: "#0f1520", borderRadius: 4, fontFamily: "system-ui" }}>ESC</kbd>
+            </div>
+            <div style={{ maxHeight: 380, overflowY: "auto", padding: "8px 0" }}>
+              {(() => {
+                const q = searchQuery.toLowerCase().trim();
+                if (!q) return <div style={{ padding: "20px 24px", color: "#475569", fontSize: 13 }}>Start typing to search…</div>;
+                const results = [];
+                // Customers
+                data.customers.filter(c => c.name.toLowerCase().includes(q) || (c.email || "").toLowerCase().includes(q)).forEach(c => {
+                  results.push({ type: "Customer", icon: "◎", label: c.name, sub: c.email || "", module: "customers" });
+                });
+                // Invoices
+                data.invoices.filter(i => i.id.toLowerCase().includes(q) || (data.customers.find(c => c.id === i.customer_id)?.name || "").toLowerCase().includes(q)).forEach(i => {
+                  const cname = data.customers.find(c => c.id === i.customer_id)?.name || "Unknown";
+                  results.push({ type: "Invoice", icon: "◈", label: i.id, sub: `${cname} · ${i.status}`, module: "invoices" });
+                });
+                // Inventory
+                data.inventory.filter(i => i.name.toLowerCase().includes(q) || (i.sku || "").toLowerCase().includes(q)).forEach(i => {
+                  results.push({ type: "Item", icon: "▦", label: i.name, sub: `SKU: ${i.sku || "—"} · Stock: ${i.stock}`, module: "inventory" });
+                });
+                // Expenses
+                data.expenses.filter(e => (e.description || "").toLowerCase().includes(q) || (e.vendor || "").toLowerCase().includes(q)).forEach(e => {
+                  results.push({ type: "Expense", icon: "◇", label: e.description || e.vendor, sub: `${e.category} · ${fmt(e.amount, currency)}`, module: "expenses" });
+                });
+                if (results.length === 0) return <div style={{ padding: "20px 24px", color: "#475569", fontSize: 13 }}>No results for "{searchQuery}"</div>;
+                return results.slice(0, 12).map((r, i) => (
+                  <button key={i} onClick={() => { setActive(r.module); setSearchOpen(false); }}
+                    style={{ display: "flex", alignItems: "center", gap: 12, width: "100%", padding: "10px 24px", background: "transparent", border: "none", color: "#e2e8f0", cursor: "pointer", textAlign: "left" }}
+                    onMouseEnter={e => e.currentTarget.style.background = "#252c3a"}
+                    onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+                    <span style={{ fontSize: 13, color: "#6366f1" }}>{r.icon}</span>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 13, fontWeight: 500 }}>{r.label}</div>
+                      <div style={{ fontSize: 11, color: "#64748b", marginTop: 1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{r.sub}</div>
+                    </div>
+                    <span style={{ fontSize: 10, color: "#334155", padding: "2px 7px", background: "#0f1520", borderRadius: 4 }}>{r.type}</span>
+                  </button>
+                ));
+              })()}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* License activation modal */}
       {showLicenseModal && (
@@ -1198,7 +1305,7 @@ function Invoices({ data, setData, showToast, currency: c = "CAD", settings }) {
   const [pdfLoading, setPdfLoading] = useState(false);
   const invoiceRef = useRef(null);
 
-  // Auto-detect overdue invoices on mount and when data changes
+  // Auto-detect overdue invoices on mount
   useEffect(() => {
     const today = new Date().toISOString().slice(0, 10);
     const hasOverdue = data.invoices.some(i => i.status === "unpaid" && i.due && i.due < today);
@@ -1210,6 +1317,21 @@ function Invoices({ data, setData, showToast, currency: c = "CAD", settings }) {
         ),
       }));
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Pick up draft from Projects "Bill" button
+  useEffect(() => {
+    try {
+      const raw = sessionStorage.getItem("mise_invoice_draft");
+      if (raw) {
+        const draft = JSON.parse(raw);
+        sessionStorage.removeItem("mise_invoice_draft");
+        const defaultTax = String(settings?.default_tax_rate ?? 13);
+        setForm({ ...draft, tax_rate: draft.tax_rate || defaultTax });
+        setModal("new");
+      }
+    } catch {}
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -1733,8 +1855,9 @@ function Inventory({ data, setData, showToast, currency: c = "CAD" }) {
 
 // ─── PURCHASING ───────────────────────────────────────────────────────────────
 function Purchasing({ data, setData, showToast, currency: c = "CAD" }) {
-  const [modal, setModal] = useState(null);
+  const [modal, setModal] = useState(null); // "new" | "edit" | "newSupplier" | "editSupplier"
   const [form, setForm] = useState({});
+  const [supplierForm, setSupplierForm] = useState({});
   const [detail, setDetail] = useState(null);
 
   const getSupplier = id => data.suppliers.find(s => s.id === id);
@@ -1749,6 +1872,25 @@ function Purchasing({ data, setData, showToast, currency: c = "CAD" }) {
       showToast("Purchase order created");
     }
     setModal(null);
+  };
+
+  const saveSupplier = () => {
+    if (!supplierForm.name) return showToast("Supplier name required", "error");
+    if (modal === "newSupplier") {
+      const newS = { ...supplierForm, id: `s${Date.now()}`, lead_days: parseInt(supplierForm.lead_days) || 14 };
+      setData(d => ({ ...d, suppliers: [...d.suppliers, newS] }));
+      showToast("Supplier added");
+    } else {
+      setData(d => ({ ...d, suppliers: d.suppliers.map(s => s.id === supplierForm.id ? { ...supplierForm, lead_days: parseInt(supplierForm.lead_days) || 14 } : s) }));
+      showToast("Supplier updated");
+    }
+    setModal(null);
+  };
+
+  const deleteSupplier = (id) => {
+    if (!window.confirm("Delete this supplier?")) return;
+    setData(d => ({ ...d, suppliers: d.suppliers.filter(s => s.id !== id) }));
+    showToast("Supplier deleted");
   };
 
   const markReceived = po => {
@@ -1780,14 +1922,25 @@ function Purchasing({ data, setData, showToast, currency: c = "CAD" }) {
       <div style={{ padding: "0 32px 32px" }}>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 2fr", gap: 20 }}>
           <Card>
-            <div style={{ padding: "14px 20px", borderBottom: "1px solid #f1f5f9", fontSize: 14, fontWeight: 700 }}>Suppliers</div>
+            <div style={{ padding: "14px 20px", borderBottom: "1px solid #f1f5f9", fontSize: 14, fontWeight: 700, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              Suppliers
+              <Btn size="sm" variant="secondary" onClick={() => { setSupplierForm({ name: "", email: "", country: "Japan", lead_days: "14", website: "" }); setModal("newSupplier"); }}>+ Add</Btn>
+            </div>
             {data.suppliers.length === 0
               ? <div style={{ padding: 20, color: "#94a3b8", fontSize: 13 }}>No suppliers yet.</div>
               : data.suppliers.map(s => (
                 <div key={s.id} style={{ padding: "12px 20px", borderBottom: "1px solid #f8f9fb" }}>
-                  <div style={{ fontSize: 13, fontWeight: 600 }}>{s.name}</div>
-                  <div style={{ fontSize: 12, color: "#64748b", marginTop: 2 }}>{s.country} · {s.lead_days} day lead time</div>
-                  <div style={{ fontSize: 12, color: "#94a3b8", marginTop: 1 }}>{s.email}</div>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                    <div>
+                      <div style={{ fontSize: 13, fontWeight: 600 }}>{s.name}</div>
+                      <div style={{ fontSize: 12, color: "#64748b", marginTop: 2 }}>{s.country} · {s.lead_days}d lead</div>
+                      <div style={{ fontSize: 12, color: "#94a3b8", marginTop: 1 }}>{s.email}</div>
+                    </div>
+                    <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+                      <Btn variant="ghost" size="sm" onClick={() => { setSupplierForm({ ...s }); setModal("editSupplier"); }}>Edit</Btn>
+                      <Btn variant="ghost" size="sm" style={{ color: "#dc2626" }} onClick={() => deleteSupplier(s.id)}>✕</Btn>
+                    </div>
+                  </div>
                 </div>
               ))
             }
@@ -1834,6 +1987,22 @@ function Purchasing({ data, setData, showToast, currency: c = "CAD" }) {
         </div>
       </div>
 
+      {(modal === "newSupplier" || modal === "editSupplier") && (
+        <Modal title={modal === "newSupplier" ? "Add Supplier" : "Edit Supplier"} onClose={() => setModal(null)}>
+          <Field label="Supplier Name"><Input value={supplierForm.name || ""} onChange={v => setSupplierForm({ ...supplierForm, name: v })} placeholder="Yoshihiro Cutlery" /></Field>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <Field label="Email"><Input value={supplierForm.email || ""} onChange={v => setSupplierForm({ ...supplierForm, email: v })} placeholder="orders@supplier.com" /></Field>
+            <Field label="Website"><Input value={supplierForm.website || ""} onChange={v => setSupplierForm({ ...supplierForm, website: v })} placeholder="supplier.com" /></Field>
+            <Field label="Country"><Input value={supplierForm.country || ""} onChange={v => setSupplierForm({ ...supplierForm, country: v })} placeholder="Japan" /></Field>
+            <Field label="Lead Time (days)"><Input value={supplierForm.lead_days || ""} onChange={v => setSupplierForm({ ...supplierForm, lead_days: v })} type="number" placeholder="14" /></Field>
+          </div>
+          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
+            <Btn variant="secondary" onClick={() => setModal(null)}>Cancel</Btn>
+            <Btn onClick={saveSupplier}>{modal === "newSupplier" ? "Add Supplier" : "Save Changes"}</Btn>
+          </div>
+        </Modal>
+      )}
+
       {modal === "new" && (
         <Modal title="New Purchase Order" onClose={() => setModal(null)} width={600}>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
@@ -1865,28 +2034,46 @@ function Purchasing({ data, setData, showToast, currency: c = "CAD" }) {
 }
 
 // ─── TEAM ─────────────────────────────────────────────────────────────────────
-function Team({ data, setData, showToast }) {
+function Team({ data, setData, showToast, currency: c = "CAD" }) {
   const [modal, setModal] = useState(null);
   const [form, setForm] = useState({});
 
+  const monthlyPayroll = data.team
+    .filter(t => t.status === "active")
+    .reduce((s, t) => s + (t.hours_week || 40) * 4.33 * (parseFloat(t.hourly_rate) || 0), 0);
+
   const save = () => {
     if (!form.name || !form.role) return showToast("Name and role required", "error");
+    const parsed = { ...form, hours_week: parseInt(form.hours_week) || 40, hourly_rate: parseFloat(form.hourly_rate) || 0 };
     if (modal === "new") {
-      setData(d => ({ ...d, team: [...d.team, { ...form, id: `t${Date.now()}`, status: "active", hours_week: parseInt(form.hours_week) || 40 }] }));
+      setData(d => ({ ...d, team: [...d.team, { ...parsed, id: `t${Date.now()}`, status: "active" }] }));
       showToast("Team member added");
     } else {
-      setData(d => ({ ...d, team: d.team.map(t => t.id === form.id ? { ...form, hours_week: parseInt(form.hours_week) } : t) }));
+      setData(d => ({ ...d, team: d.team.map(t => t.id === form.id ? parsed : t) }));
       showToast("Team member updated");
     }
     setModal(null);
   };
 
+  const deleteMember = (id) => {
+    if (!window.confirm("Remove this team member?")) return;
+    setData(d => ({ ...d, team: d.team.filter(t => t.id !== id) }));
+    showToast("Team member removed");
+  };
+
   return (
     <div>
       <PageHeader title="Team"
-        subtitle={`${data.team.filter(t => t.status === "active").length} active · ${data.team.reduce((s, t) => s + t.hours_week, 0)} hrs/week total`}
-        action={<Btn onClick={() => { setForm({ name: "", role: "", email: "", phone: "", start: "", status: "active", hours_week: 40 }); setModal("new"); }}>+ Add Member</Btn>} />
+        subtitle={`${data.team.filter(t => t.status === "active").length} active · est. ${fmt(monthlyPayroll, c)}/mo payroll`}
+        action={<Btn onClick={() => { setForm({ name: "", role: "", email: "", phone: "", start: "", status: "active", hours_week: 40, hourly_rate: 0 }); setModal("new"); }}>+ Add Member</Btn>} />
       <div style={{ padding: "0 32px 32px" }}>
+        {monthlyPayroll > 0 && (
+          <div style={{ display: "flex", gap: 14, marginBottom: 20 }}>
+            <StatCard label="Active Members" value={data.team.filter(t => t.status === "active").length} />
+            <StatCard label="Total Hrs/Week" value={`${data.team.reduce((s, t) => s + (t.hours_week || 0), 0)}h`} />
+            <StatCard label="Est. Monthly Payroll" value={fmt(monthlyPayroll, c)} accent />
+          </div>
+        )}
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 16 }}>
           {data.team.length === 0
             ? <div style={{ color: "#94a3b8", fontSize: 13, gridColumn: "1 / -1" }}>No team members yet. Add your first.</div>
@@ -1902,13 +2089,17 @@ function Team({ data, setData, showToast }) {
                     <div style={{ fontWeight: 700, fontSize: 14 }}>{member.name}</div>
                     <div style={{ fontSize: 12, color: "#6366f1", fontWeight: 500, marginTop: 1 }}>{member.role}</div>
                     <div style={{ fontSize: 12, color: "#94a3b8", marginTop: 4 }}>{member.email}</div>
-                    <div style={{ display: "flex", gap: 8, marginTop: 8, alignItems: "center" }}>
+                    <div style={{ display: "flex", gap: 8, marginTop: 8, alignItems: "center", flexWrap: "wrap" }}>
                       <span style={{ fontSize: 11, color: "#64748b" }}>Since {fmtDate(member.start)}</span>
                       <span style={{ fontSize: 11, color: "#64748b" }}>· {member.hours_week}h/wk</span>
+                      {member.hourly_rate > 0 && <span style={{ fontSize: 11, color: "#6366f1", fontWeight: 600 }}>~{fmt((member.hours_week || 40) * 4.33 * member.hourly_rate, c)}/mo</span>}
                       {statusBadge(member.status, { active: { label: "Active", color: "#16a34a", bg: "#dcfce7" }, inactive: { label: "Inactive", color: "#94a3b8", bg: "#f1f5f9" } })}
                     </div>
                   </div>
-                  <Btn variant="ghost" size="sm" onClick={() => { setForm({ ...member }); setModal("edit"); }}>Edit</Btn>
+                  <div style={{ display: "flex", gap: 4 }}>
+                    <Btn variant="ghost" size="sm" onClick={() => { setForm({ ...member }); setModal("edit"); }}>Edit</Btn>
+                    <Btn variant="ghost" size="sm" style={{ color: "#dc2626" }} onClick={() => deleteMember(member.id)}>✕</Btn>
+                  </div>
                 </div>
               </Card>
             ))
@@ -1920,12 +2111,13 @@ function Team({ data, setData, showToast }) {
         <Modal title={modal === "new" ? "Add Team Member" : "Edit Team Member"} onClose={() => setModal(null)}>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
             <Field label="Full Name" style={{ gridColumn: "span 2" }}><Input value={form.name || ""} onChange={v => setForm({ ...form, name: v })} /></Field>
-            <Field label="Role / Title"><Input value={form.role || ""} onChange={v => setForm({ ...form, role: v })} placeholder="Sales & Fulfilment" /></Field>
+            <Field label="Role / Title"><Input value={form.role || ""} onChange={v => setForm({ ...form, role: v })} placeholder="Chef de Partie" /></Field>
             <Field label="Hours / Week"><Input value={form.hours_week || ""} onChange={v => setForm({ ...form, hours_week: v })} type="number" /></Field>
             <Field label="Email"><Input value={form.email || ""} onChange={v => setForm({ ...form, email: v })} /></Field>
             <Field label="Phone"><Input value={form.phone || ""} onChange={v => setForm({ ...form, phone: v })} /></Field>
             <Field label="Start Date"><Input type="date" value={form.start || ""} onChange={v => setForm({ ...form, start: v })} /></Field>
             <Field label="Status"><Select value={form.status || "active"} onChange={v => setForm({ ...form, status: v })} options={[{ value: "active", label: "Active" }, { value: "inactive", label: "Inactive" }]} /></Field>
+            <Field label={`Hourly Rate (${c})`}><Input value={form.hourly_rate || ""} onChange={v => setForm({ ...form, hourly_rate: v })} type="number" placeholder="25.00" /></Field>
           </div>
           <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
             <Btn variant="secondary" onClick={() => setModal(null)}>Cancel</Btn>
@@ -1938,7 +2130,7 @@ function Team({ data, setData, showToast }) {
 }
 
 // ─── PROJECTS ─────────────────────────────────────────────────────────────────
-function Projects({ data, setData, showToast, currency: c = "CAD" }) {
+function Projects({ data, setData, showToast, currency: c = "CAD", settings, onNavigate }) {
   const [modal, setModal] = useState(null);
   const [form, setForm] = useState({});
 
@@ -1954,6 +2146,32 @@ function Projects({ data, setData, showToast, currency: c = "CAD" }) {
       showToast("Project updated");
     }
     setModal(null);
+  };
+
+  const deleteProject = (id, name) => {
+    if (!window.confirm(`Delete project "${name}"?`)) return;
+    setData(d => ({ ...d, projects: d.projects.filter(p => p.id !== id) }));
+    showToast("Project deleted");
+  };
+
+  const billProject = (p) => {
+    const today = new Date().toISOString().slice(0, 10);
+    const due = new Date(); due.setDate(due.getDate() + 30);
+    const defaultTax = String(settings?.default_tax_rate ?? 13);
+    const draft = {
+      customer_id: data.customers[0]?.id || "",
+      date: today,
+      due: due.toISOString().slice(0, 10),
+      terms: "30",
+      tax_rate: defaultTax,
+      notes: `Project: ${p.name}`,
+      items: [{ desc: p.name, qty: 1, price: p.budget || 0 }],
+      _prefill: true,
+    };
+    // Store draft in sessionStorage so Invoices page can pick it up
+    try { sessionStorage.setItem("mise_invoice_draft", JSON.stringify(draft)); } catch {}
+    if (onNavigate) onNavigate("invoices");
+    showToast("Draft invoice created — review and save in Invoicing");
   };
 
   return (
@@ -1989,8 +2207,10 @@ function Projects({ data, setData, showToast, currency: c = "CAD" }) {
                     <span style={{ color: overBudget ? "#dc2626" : "#64748b" }}>{fmt(p.spent, c)} spent</span>
                     <span style={{ color: "#94a3b8" }}>Budget: {fmt(p.budget, c)}</span>
                   </div>
-                  <div style={{ marginTop: 12, textAlign: "right" }}>
+                  <div style={{ marginTop: 12, display: "flex", justifyContent: "flex-end", gap: 6 }}>
+                    <Btn variant="ghost" size="sm" style={{ color: "#6366f1", fontWeight: 600 }} onClick={() => billProject(p)}>⊞ Bill</Btn>
                     <Btn variant="ghost" size="sm" onClick={() => { setForm({ ...p }); setModal("edit"); }}>Edit</Btn>
+                    <Btn variant="ghost" size="sm" style={{ color: "#dc2626" }} onClick={() => deleteProject(p.id, p.name)}>✕</Btn>
                   </div>
                 </Card>
               );
@@ -2060,8 +2280,27 @@ function Reports({ data, currency: c = "CAD" }) {
   })();
   const totalTaxCollected = taxByQuarter.reduce((s, [, v]) => s + v.taxCollected, 0);
 
+  // Cash flow by month: money in (paid invoices) vs money out (expenses)
+  const cashFlowByMonth = (() => {
+    const months = {};
+    const key = d => { const dt = new Date(d); return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}`; };
+    const label = k => { const [y, m] = k.split("-"); return `${["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][parseInt(m)-1]} ${y}`; };
+    data.invoices.filter(i => i.status === "paid" && i.date).forEach(inv => {
+      const k = key(inv.date);
+      if (!months[k]) months[k] = { label: label(k), in: 0, out: 0 };
+      months[k].in += inv.total || 0;
+    });
+    data.expenses.filter(e => e.date).forEach(exp => {
+      const k = key(exp.date);
+      if (!months[k]) months[k] = { label: label(k), in: 0, out: 0 };
+      months[k].out += exp.amount || 0;
+    });
+    return Object.entries(months).sort((a, b) => a[0].localeCompare(b[0])).map(([, v]) => v);
+  })();
+
   const REPORTS = [
     { id: "pl", label: "Profit & Loss" },
+    { id: "cashflow", label: "Cash Flow" },
     { id: "tax", label: "Tax Collected" },
     { id: "ar", label: "AR Aging" },
     { id: "expenses", label: "Expenses Breakdown" },
@@ -2081,6 +2320,79 @@ function Reports({ data, currency: c = "CAD" }) {
                 color: report === r.id ? "#fff" : "#374151" }}>{r.label}</button>
           ))}
         </div>
+
+        {report === "cashflow" && (
+          <Card style={{ padding: 28 }}>
+            <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 20 }}>Cash Flow — Monthly</div>
+            {cashFlowByMonth.length === 0
+              ? <div style={{ color: "#94a3b8", fontSize: 13 }}>No data yet. Record paid invoices and expenses to see cash flow.</div>
+              : (
+                <>
+                  <div style={{ overflowX: "auto" }}>
+                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                      <thead>
+                        <tr style={{ background: "#f8fafc" }}>
+                          <th style={{ padding: "8px 12px", textAlign: "left", fontWeight: 600, color: "#374151" }}>Month</th>
+                          <th style={{ padding: "8px 12px", textAlign: "right", fontWeight: 600, color: "#16a34a" }}>Cash In</th>
+                          <th style={{ padding: "8px 12px", textAlign: "right", fontWeight: 600, color: "#dc2626" }}>Cash Out</th>
+                          <th style={{ padding: "8px 12px", textAlign: "right", fontWeight: 600, color: "#374151" }}>Net</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {cashFlowByMonth.map((row, i) => {
+                          const net = row.in - row.out;
+                          return (
+                            <tr key={i} style={{ borderBottom: "1px solid #f1f5f9" }}>
+                              <td style={{ padding: "10px 12px", fontWeight: 500 }}>{row.label}</td>
+                              <td style={{ padding: "10px 12px", textAlign: "right", color: "#16a34a" }}>{fmt(row.in, c)}</td>
+                              <td style={{ padding: "10px 12px", textAlign: "right", color: "#dc2626" }}>{fmt(row.out, c)}</td>
+                              <td style={{ padding: "10px 12px", textAlign: "right", fontWeight: 700, color: net >= 0 ? "#16a34a" : "#dc2626" }}>{net >= 0 ? "+" : ""}{fmt(net, c)}</td>
+                            </tr>
+                          );
+                        })}
+                        <tr style={{ background: "#f8fafc", fontWeight: 700 }}>
+                          <td style={{ padding: "10px 12px" }}>Total</td>
+                          <td style={{ padding: "10px 12px", textAlign: "right", color: "#16a34a" }}>{fmt(cashFlowByMonth.reduce((s, r) => s + r.in, 0), c)}</td>
+                          <td style={{ padding: "10px 12px", textAlign: "right", color: "#dc2626" }}>{fmt(cashFlowByMonth.reduce((s, r) => s + r.out, 0), c)}</td>
+                          <td style={{ padding: "10px 12px", textAlign: "right", color: cashFlowByMonth.reduce((s, r) => s + r.in - r.out, 0) >= 0 ? "#16a34a" : "#dc2626" }}>
+                            {fmt(cashFlowByMonth.reduce((s, r) => s + r.in - r.out, 0), c)}
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                  {/* Simple net cash flow bar chart */}
+                  <div style={{ marginTop: 24 }}>
+                    {(() => {
+                      const nets = cashFlowByMonth.map(r => r.in - r.out);
+                      const absMax = Math.max(...nets.map(Math.abs), 1);
+                      const barH = 100;
+                      return (
+                        <svg width="100%" viewBox={`0 0 ${Math.max(cashFlowByMonth.length * 50, 320)} ${barH * 2 + 30}`} style={{ overflow: "visible" }}>
+                          {cashFlowByMonth.map((r, i) => {
+                            const net = r.in - r.out;
+                            const bh = Math.max(3, (Math.abs(net) / absMax) * barH);
+                            const x = i * 50 + 10;
+                            const bw = 34;
+                            const isPos = net >= 0;
+                            const y = isPos ? barH - bh : barH;
+                            return (
+                              <g key={i}>
+                                <rect x={x} y={y} width={bw} height={bh} rx={3} fill={isPos ? "#6366f1" : "#dc2626"} opacity={0.85} />
+                                <text x={x + bw / 2} y={barH * 2 + 20} textAnchor="middle" fill="#94a3b8" fontSize={8} fontFamily="system-ui">{r.label.slice(0, 3)}</text>
+                              </g>
+                            );
+                          })}
+                          <line x1={5} x2={cashFlowByMonth.length * 50 + 10} y1={barH} y2={barH} stroke="#e2e8f0" strokeWidth={1} />
+                        </svg>
+                      );
+                    })()}
+                  </div>
+                </>
+              )
+            }
+          </Card>
+        )}
 
         {report === "pl" && (
           <Card style={{ padding: 28, maxWidth: 560 }}>
