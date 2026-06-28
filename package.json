@@ -1,0 +1,32 @@
+{
+  "name": "mise-erp",
+  "version": "1.0.0",
+  "description": "Mise ERP — Small Business Management",
+  "main": "main.js",
+  "author": {
+    "name": "Mise Software"
+  },
+  "homepage": "https://github.com/mise-erp/mise-erp",
+  "scripts": {
+    "dev": "concurrently \"vite\" \"wait-on http://localhost:5173 && electron .\"",
+    "build": "vite build",
+    "dist": "npm run build && electron-builder"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.2.1",
+    "concurrently": "^8.2.2",
+    "electron": "^28.3.3",
+    "electron-builder": "^24.13.3",
+    "vite": "^5.1.6",
+    "wait-on": "^7.2.0"
+  },
+  "dependencies": {
+    "electron-store": "^8.2.0",
+    "electron-updater": "^6.1.8",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  },
+  "build": {
+    "extends": "./electron-builder.yml"
+  }
+}

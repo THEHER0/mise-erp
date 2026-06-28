@@ -1,0 +1,46 @@
+appId: com.mise.erp
+productName: Mise ERP
+copyright: Copyright © 2026 Mise Software
+
+directories:
+  output: dist-electron
+  buildResources: assets
+
+files:
+  - main.js
+  - preload.js
+  - dist/**
+  - node_modules/**
+
+mac:
+  category: public.app-category.business
+  icon: assets/icon.png
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: assets/entitlements.mac.plist
+  entitlementsInherit: assets/entitlements.mac.plist
+  # Code signing — add your Apple Developer identity here:
+  # identity: "Developer ID Application: Your Name (TEAMID)"
+  # notarize:
+  #   teamId: YOUR_TEAM_ID
+
+dmg:
+  title: Mise ERP
+  window:
+    width: 540
+    height: 380
+  contents:
+    - x: 130
+      y: 190
+      type: file
+    - x: 410
+      y: 190
+      type: link
+      path: /Applications
+  background: null
+
+publish:
+  provider: github
+  owner: mise-erp
+  repo: mise-erp
+  private: false
