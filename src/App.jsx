@@ -876,7 +876,24 @@ function Invoices({ data, setData, showToast, currency: c = "CAD" }) {
 
   const filtered = data.invoices.filter(i => filter === "all" ? true : i.status === filter);
   const getCustomer = id => data.customers.find(cu => cu.id === id);
-  const calcTotal = items => items.reduce((s, it) => s + (parseFloat(it.qty) * parseFloat(it.price) || 0), 0);
+  const calcSubtotal = items => items.reduce((s, it) => s + (parseFloat(it.qty) * parseFloat(it.price) || 0), 0);
+  const calcTax = (subtotal, taxRate) => subtotal * (parseFloat(taxRate) || 0) / 100;
+  const calcTotal = (items, taxRate = 0) => { const sub = calcSubtotal(items); return sub + calcTax(sub, taxRate); };
+
+  const PAYMENT_TERMS = [
+    { value: "0", label: "Due on Receipt" },
+    { value: "15", label: "Net 15" },
+    { value: "30", label: "Net 30" },
+    { value: "60", label: "Net 60" },
+    { value: "custom", label: "Custom Date" },
+  ];
+
+  const applyTerms = (days, date) => {
+    if (days === "custom" || !date) return;
+    const d = new Date(date + "T00:00:00");
+    d.setDate(d.getDate() + parseInt(days));
+    setForm(f => ({ ...f, due: d.toISOString().slice(0, 10) }));
+  };
 
   const nextId = () => {
     const max = Math.max(...data.invoices.map(i => parseInt(i.id.split("-")[1])), 1040);
@@ -886,7 +903,9 @@ function Invoices({ data, setData, showToast, currency: c = "CAD" }) {
   const saveInvoice = () => {
     if (!form.customer_id) return showToast("Select a customer", "error");
     if (!form.date) return showToast("Set an invoice date", "error");
-    const newInv = { ...form, id: nextId(), status: "unpaid", total: calcTotal(form.items) };
+    const subtotal = calcSubtotal(form.items);
+    const taxAmt = calcTax(subtotal, form.tax_rate || 0);
+    const newInv = { ...form, id: nextId(), status: "unpaid", subtotal, tax_amount: taxAmt, total: subtotal + taxAmt };
     setData(d => ({ ...d, invoices: [newInv, ...d.invoices] }));
     showToast("Invoice created");
     setModal(null);
@@ -952,7 +971,9 @@ function Invoices({ data, setData, showToast, currency: c = "CAD" }) {
       <PageHeader title="Invoicing"
         subtitle={`${data.invoices.filter(i => i.status !== "paid").length} open invoices`}
         action={<Btn onClick={() => {
-          setForm({ customer_id: data.customers[0]?.id || "", date: new Date().toISOString().slice(0, 10), due: "", items: [{ desc: "", qty: 1, price: 0 }] });
+          const today = new Date().toISOString().slice(0, 10);
+          const due = new Date(); due.setDate(due.getDate() + 30);
+          setForm({ customer_id: data.customers[0]?.id || "", date: today, due: due.toISOString().slice(0, 10), terms: "30", tax_rate: "13", notes: "", items: [{ desc: "", qty: 1, price: 0 }] });
           setModal(true);
         }}>+ New Invoice</Btn>} />
       <div style={{ padding: "0 32px 32px" }}>
@@ -986,6 +1007,11 @@ function Invoices({ data, setData, showToast, currency: c = "CAD" }) {
                   <InfoRow label="Status" value={statusBadge(detail.status, INV_STATUS)} />
                 </div>
               </div>
+              {detail.notes && (
+                <div style={{ fontSize: 13, color: "#64748b", marginBottom: 16, padding: "10px 14px", background: "#f8f9fb", borderRadius: 6 }}>
+                  <span style={{ fontWeight: 600, color: "#374151" }}>Notes: </span>{detail.notes}
+                </div>
+              )}
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, marginBottom: 16 }}>
                 <thead>
                   <tr style={{ borderBottom: "2px solid #f1f5f9" }}>
@@ -1006,9 +1032,23 @@ function Invoices({ data, setData, showToast, currency: c = "CAD" }) {
                   ))}
                 </tbody>
                 <tfoot>
+                  {detail.subtotal != null && detail.subtotal !== detail.total && (
+                    <>
+                      <tr>
+                        <td colSpan={3} style={{ padding: "8px 0", textAlign: "right", fontSize: 13, color: "#64748b" }}>Subtotal</td>
+                        <td style={{ padding: "8px 0", textAlign: "right", fontSize: 13, color: "#64748b", fontVariantNumeric: "tabular-nums" }}>{fmt(detail.subtotal, c)}</td>
+                      </tr>
+                      <tr>
+                        <td colSpan={3} style={{ padding: "4px 0", textAlign: "right", fontSize: 13, color: "#64748b" }}>
+                          Tax {detail.tax_rate ? `(${detail.tax_rate}%)` : ""}
+                        </td>
+                        <td style={{ padding: "4px 0", textAlign: "right", fontSize: 13, color: "#64748b", fontVariantNumeric: "tabular-nums" }}>{fmt(detail.tax_amount || 0, c)}</td>
+                      </tr>
+                    </>
+                  )}
                   <tr>
-                    <td colSpan={3} style={{ padding: "12px 0", textAlign: "right", fontWeight: 700, fontSize: 14 }}>Total</td>
-                    <td style={{ padding: "12px 0", textAlign: "right", fontWeight: 700, fontSize: 16, color: "#6366f1", fontVariantNumeric: "tabular-nums" }}>{fmt(detail.total, c)}</td>
+                    <td colSpan={3} style={{ padding: "12px 0", textAlign: "right", fontWeight: 700, fontSize: 14, borderTop: "1px solid #f1f5f9" }}>Total</td>
+                    <td style={{ padding: "12px 0", textAlign: "right", fontWeight: 700, fontSize: 16, color: "#6366f1", fontVariantNumeric: "tabular-nums", borderTop: "1px solid #f1f5f9" }}>{fmt(detail.total, c)}</td>
                   </tr>
                 </tfoot>
               </table>
@@ -1046,29 +1086,73 @@ function Invoices({ data, setData, showToast, currency: c = "CAD" }) {
       </div>
 
       {modal && (
-        <Modal title="New Invoice" onClose={() => setModal(null)} width={640}>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
+        <Modal title="New Invoice" onClose={() => setModal(null)} width={660}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 4 }}>
             <Field label="Customer" style={{ gridColumn: "span 2" }}>
               <Select value={form.customer_id} onChange={v => setForm({ ...form, customer_id: v })}
                 options={data.customers.map(cu => ({ value: cu.id, label: cu.name }))} />
             </Field>
-            <Field label="Invoice Date"><Input type="date" value={form.date} onChange={v => setForm({ ...form, date: v })} /></Field>
-            <Field label="Due Date" style={{ gridColumn: "span 2" }}><Input type="date" value={form.due} onChange={v => setForm({ ...form, due: v })} /></Field>
+            <Field label="Invoice Date">
+              <Input type="date" value={form.date} onChange={v => {
+                setForm(f => ({ ...f, date: v }));
+                if (form.terms && form.terms !== "custom") applyTerms(form.terms, v);
+              }} />
+            </Field>
+            <Field label="Payment Terms">
+              <Select value={form.terms || "30"} onChange={v => {
+                setForm(f => ({ ...f, terms: v }));
+                if (v !== "custom") applyTerms(v, form.date);
+              }} options={PAYMENT_TERMS} />
+            </Field>
+            {(form.terms === "custom" || !form.terms) && (
+              <Field label="Due Date">
+                <Input type="date" value={form.due || ""} onChange={v => setForm({ ...form, due: v })} />
+              </Field>
+            )}
+            <Field label="Tax Rate (%)">
+              <Select value={String(form.tax_rate ?? "13")} onChange={v => setForm({ ...form, tax_rate: v })}
+                options={[
+                  { value: "0", label: "No Tax (0%)" },
+                  { value: "5", label: "GST (5%)" },
+                  { value: "13", label: "Ontario HST (13%)" },
+                  { value: "14.975", label: "Québec (14.975%)" },
+                  { value: "15", label: "Atlantic HST (15%)" },
+                  { value: "12", label: "BC HST (12%)" },
+                ]} />
+            </Field>
           </div>
-          <div style={{ fontSize: 12, fontWeight: 600, color: "#374151", marginBottom: 8, marginTop: 4 }}>LINE ITEMS</div>
+
+          <div style={{ fontSize: 12, fontWeight: 600, color: "#374151", marginBottom: 8, marginTop: 8, textTransform: "uppercase", letterSpacing: "0.04em" }}>Line Items</div>
           {form.items.map((it, idx) => (
-            <div key={idx} style={{ display: "grid", gridTemplateColumns: "1fr 60px 100px 32px", gap: 8, marginBottom: 8 }}>
+            <div key={idx} style={{ display: "grid", gridTemplateColumns: "1fr 60px 110px 32px", gap: 8, marginBottom: 8 }}>
               <Input value={it.desc} onChange={v => updateItem(idx, "desc", v)} placeholder="Description" />
               <Input value={it.qty} onChange={v => updateItem(idx, "qty", v)} type="number" placeholder="Qty" />
-              <Input value={it.price} onChange={v => updateItem(idx, "price", v)} type="number" placeholder="Price" />
+              <Input value={it.price} onChange={v => updateItem(idx, "price", v)} type="number" placeholder="Unit price" />
               <button onClick={() => removeItem(idx)} style={{ background: "#fee2e2", border: "none", borderRadius: 6, color: "#dc2626", cursor: "pointer", fontWeight: 700 }}>×</button>
             </div>
           ))}
           <Btn variant="ghost" size="sm" onClick={addItem}>+ Add Line</Btn>
-          <div style={{ textAlign: "right", marginTop: 12, fontSize: 15, fontWeight: 700, color: "#6366f1" }}>
-            Total: {fmt(calcTotal(form.items), c)}
-          </div>
-          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 16 }}>
+
+          <Field label="Notes / Payment Instructions" style={{ marginTop: 12 }}>
+            <Textarea value={form.notes || ""} onChange={v => setForm({ ...form, notes: v })} placeholder="e.g. Please pay via EFT to account ending 4821. Reference invoice number." />
+          </Field>
+
+          {/* Totals */}
+          {(() => {
+            const sub = calcSubtotal(form.items);
+            const tax = calcTax(sub, form.tax_rate ?? 13);
+            const total = sub + tax;
+            const taxPct = parseFloat(form.tax_rate ?? 13);
+            return (
+              <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4, marginTop: 8, padding: "12px 0", borderTop: "1px solid #f1f5f9" }}>
+                <div style={{ fontSize: 13, color: "#64748b" }}>Subtotal: <strong style={{ fontVariantNumeric: "tabular-nums" }}>{fmt(sub, c)}</strong></div>
+                {taxPct > 0 && <div style={{ fontSize: 13, color: "#64748b" }}>Tax ({taxPct}%): <strong style={{ fontVariantNumeric: "tabular-nums" }}>{fmt(tax, c)}</strong></div>}
+                <div style={{ fontSize: 16, fontWeight: 700, color: "#6366f1" }}>Total: <span style={{ fontVariantNumeric: "tabular-nums" }}>{fmt(total, c)}</span></div>
+              </div>
+            );
+          })()}
+
+          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
             <Btn variant="secondary" onClick={() => setModal(null)}>Cancel</Btn>
             <Btn onClick={saveInvoice}>Create Invoice</Btn>
           </div>
