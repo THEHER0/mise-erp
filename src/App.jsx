@@ -301,6 +301,7 @@ const MODULES = [
   { id: "projects", label: "Projects", icon: "◫" },
   { id: "reports", label: "Reports", icon: "▤" },
   { id: "integrations", label: "Integrations", icon: "⬡" },
+  { id: "settings", label: "Settings", icon: "⚙" },
 ];
 
 export default function ERP() {
@@ -311,6 +312,8 @@ export default function ERP() {
   const [toast, setToast] = useState(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [updateInfo, setUpdateInfo] = useState(null); // { version, type: 'available'|'downloaded' }
+  const [licenseStatus, setLicenseStatus] = useState(null); // { licensed, trial, daysLeft }
+  const [showLicenseModal, setShowLicenseModal] = useState(false);
 
   // ── Load from electron-store on mount ──
   useEffect(() => {
@@ -333,6 +336,12 @@ export default function ERP() {
       setDataRaw(savedData || { ...EMPTY_DATA, company: { name: savedSettings?.company || "", currency: savedSettings?.currency || "CAD", fiscal_year_start: savedSettings?.fiscal_year_start || "January" } });
       setAppState("ready");
     })();
+  }, []);
+
+  // ── License check ──
+  useEffect(() => {
+    if (!isElectron) return;
+    window.electronAPI.getLicenseStatus().then(setLicenseStatus).catch(() => {});
   }, []);
 
   // ── Auto-updater listeners ──
@@ -389,6 +398,7 @@ export default function ERP() {
     dashboard: Dashboard, customers: Customers, invoices: Invoices,
     expenses: Expenses, inventory: Inventory, purchasing: Purchasing,
     team: Team, projects: Projects, reports: Reports, integrations: Integrations,
+    settings: Settings,
   };
   const Page = pages[active] || Dashboard;
   const currency = settings?.currency || data?.company?.currency || "CAD";
@@ -475,8 +485,46 @@ export default function ERP() {
           </div>
         )}
 
-        <Page data={data} setData={setData} showToast={showToast} currency={currency} />
+        {/* Trial banner */}
+        {licenseStatus && !licenseStatus.licensed && licenseStatus.trial && (
+          <div style={{
+            background: licenseStatus.daysLeft <= 5 ? "#7f1d1d" : "#1e1b4b",
+            borderBottom: `1px solid ${licenseStatus.daysLeft <= 5 ? "#991b1b" : "#3730a3"}`,
+            padding: "9px 24px", display: "flex", alignItems: "center", gap: 12, fontSize: 13,
+            color: licenseStatus.daysLeft <= 5 ? "#fca5a5" : "#a5b4fc",
+          }}>
+            <span>
+              {licenseStatus.daysLeft > 0
+                ? `⏳ Trial — ${licenseStatus.daysLeft} day${licenseStatus.daysLeft !== 1 ? "s" : ""} remaining`
+                : "⚠ Your trial has expired"}
+            </span>
+            <button onClick={() => setShowLicenseModal(true)}
+              style={{ marginLeft: "auto", padding: "5px 16px",
+                background: licenseStatus.daysLeft <= 5 ? "#dc2626" : "#6366f1",
+                color: "#fff", border: "none", borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+              Activate License
+            </button>
+          </div>
+        )}
+
+        <Page data={data} setData={setData} showToast={showToast} currency={currency}
+          settings={settings} setSettings={(s) => {
+            setSettings(s);
+            if (isElectron) window.electronAPI.setSettings(s);
+          }}
+          onOpenLicense={() => setShowLicenseModal(true)}
+        />
       </main>
+
+      {/* License activation modal */}
+      {showLicenseModal && (
+        <LicenseModal
+          status={licenseStatus}
+          onClose={() => setShowLicenseModal(false)}
+          onActivated={(status) => { setLicenseStatus(status); setShowLicenseModal(false); showToast("License activated — thank you!"); }}
+          showToast={showToast}
+        />
+      )}
 
       {/* Toast */}
       {toast && (
@@ -487,6 +535,101 @@ export default function ERP() {
           {toast.msg}
         </div>
       )}
+    </div>
+  );
+}
+
+// ─── LICENSE MODAL ────────────────────────────────────────────────────────────
+function LicenseModal({ status, onClose, onActivated, showToast }) {
+  const [tab, setTab] = useState("activate"); // activate | buy
+  const [key, setKey] = useState("");
+  const [email, setEmail] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const activate = async () => {
+    if (!key.trim()) return showToast("Enter your license key", "error");
+    if (!email.trim()) return showToast("Enter the email used at checkout", "error");
+    setLoading(true);
+    try {
+      const result = await window.electronAPI.activateLicense({ key: key.trim(), email: email.trim() });
+      onActivated({ licensed: true, trial: false, license: result });
+    } catch (err) {
+      showToast(err.message || "Activation failed — check your key and try again", "error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 2000,
+      display: "flex", alignItems: "center", justifyContent: "center" }}>
+      <div style={{ background: "#fff", borderRadius: 12, width: 460, padding: 32,
+        boxShadow: "0 20px 60px rgba(0,0,0,0.4)" }}>
+
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 24 }}>
+          <div>
+            <div style={{ fontSize: 20, fontWeight: 700, color: "#1a1d23" }}>Mise ERP</div>
+            <div style={{ fontSize: 13, color: "#64748b", marginTop: 2 }}>
+              {status?.daysLeft > 0 ? `${status.daysLeft} trial days remaining` : "Trial expired"}
+            </div>
+          </div>
+          <button onClick={onClose} style={{ background: "none", border: "none", fontSize: 20, cursor: "pointer", color: "#94a3b8" }}>×</button>
+        </div>
+
+        {/* Tabs */}
+        <div style={{ display: "flex", gap: 4, marginBottom: 24, background: "#f1f5f9", borderRadius: 8, padding: 4 }}>
+          {[["activate", "I have a license"], ["buy", "Buy a license"]].map(([t, label]) => (
+            <button key={t} onClick={() => setTab(t)} style={{
+              flex: 1, padding: "8px 0", borderRadius: 6, border: "none", cursor: "pointer",
+              background: tab === t ? "#fff" : "transparent", color: tab === t ? "#1a1d23" : "#64748b",
+              fontSize: 13, fontWeight: tab === t ? 600 : 400,
+              boxShadow: tab === t ? "0 1px 4px rgba(0,0,0,0.1)" : "none",
+            }}>{label}</button>
+          ))}
+        </div>
+
+        {tab === "activate" ? (
+          <div>
+            <Field label="License Key">
+              <input value={key} onChange={e => setKey(e.target.value)}
+                placeholder="XXXX-XXXX-XXXX-XXXX"
+                style={{ width: "100%", padding: "9px 12px", border: "1px solid #e2e8f0", borderRadius: 6,
+                  fontSize: 14, fontFamily: "monospace", boxSizing: "border-box", outline: "none" }} />
+            </Field>
+            <Field label="Email used at checkout">
+              <input value={email} onChange={e => setEmail(e.target.value)}
+                placeholder="you@example.com" type="email"
+                style={{ width: "100%", padding: "9px 12px", border: "1px solid #e2e8f0", borderRadius: 6,
+                  fontSize: 14, boxSizing: "border-box", outline: "none" }} />
+            </Field>
+            <button onClick={activate} disabled={loading}
+              style={{ width: "100%", padding: "12px 0", marginTop: 8,
+                background: loading ? "#a5b4fc" : "#6366f1", color: "#fff",
+                border: "none", borderRadius: 8, fontSize: 14, fontWeight: 600, cursor: loading ? "default" : "pointer" }}>
+              {loading ? "Verifying…" : "Activate License"}
+            </button>
+          </div>
+        ) : (
+          <div style={{ textAlign: "center" }}>
+            <div style={{ fontSize: 36, marginBottom: 12 }}>🎉</div>
+            <div style={{ fontSize: 15, fontWeight: 600, color: "#1a1d23", marginBottom: 8 }}>
+              Mise ERP — One-time purchase
+            </div>
+            <div style={{ fontSize: 13, color: "#64748b", marginBottom: 24, lineHeight: 1.6 }}>
+              Full access, lifetime updates, up to 2 Macs.
+              No subscription. No data sent to our servers.
+            </div>
+            <button onClick={() => isElectron && window.electronAPI.openCheckout()}
+              style={{ width: "100%", padding: "14px 0", background: "#6366f1", color: "#fff",
+                border: "none", borderRadius: 8, fontSize: 14, fontWeight: 600, cursor: "pointer" }}>
+              Buy Now — opens in your browser
+            </button>
+            <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 12 }}>
+              Secure checkout via Paddle · 30-day money-back guarantee
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -900,6 +1043,68 @@ function Customers({ data, setData, showToast, currency: c = "CAD" }) {
 
   const customerInvoices = detail ? data.invoices.filter(i => i.customer_id === detail.id) : [];
 
+  const printStatement = async (cu) => {
+    const invoices = data.invoices.filter(i => i.customer_id === cu.id);
+    const company = data.company || {};
+    const total = invoices.reduce((s, i) => s + i.total, 0);
+    const paid = invoices.filter(i => i.status === "paid").reduce((s, i) => s + i.total, 0);
+    const outstanding = total - paid;
+
+    const rows = invoices.map(inv => `
+      <tr>
+        <td>${inv.id}</td>
+        <td>${inv.date}</td>
+        <td>${inv.due || "—"}</td>
+        <td style="text-align:right">${fmt(inv.total, c)}</td>
+        <td style="text-align:center">${inv.status.toUpperCase()}</td>
+      </tr>`).join("");
+
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8">
+    <title>Statement — ${cu.name}</title>
+    <style>
+      body { font-family: 'Helvetica Neue', sans-serif; font-size: 13px; color: #1a1d23; margin: 0; padding: 40px; }
+      h1 { font-size: 22px; margin: 0 0 4px; }
+      .header { display: flex; justify-content: space-between; margin-bottom: 32px; }
+      .co { font-size: 11px; color: #64748b; }
+      table { width: 100%; border-collapse: collapse; margin-top: 24px; }
+      th { text-align: left; font-size: 11px; color: #64748b; border-bottom: 1px solid #e2e8f0; padding: 6px 8px; }
+      td { padding: 8px; border-bottom: 1px solid #f1f5f9; }
+      .summary { margin-top: 24px; text-align: right; }
+      .summary td { border: none; padding: 4px 8px; }
+      .total-row td { font-weight: 700; font-size: 14px; border-top: 2px solid #1a1d23; }
+    </style>
+    </head><body>
+    <div class="header">
+      <div>
+        <h1>Account Statement</h1>
+        <div class="co">${company.name || "Mise ERP"} · Generated ${new Date().toLocaleDateString("en-CA")}</div>
+      </div>
+      <div style="text-align:right">
+        <div style="font-weight:600">${cu.name}</div>
+        ${cu.email ? `<div class="co">${cu.email}</div>` : ""}
+        ${cu.city ? `<div class="co">${cu.city}</div>` : ""}
+      </div>
+    </div>
+    <table>
+      <thead><tr>
+        <th>Invoice</th><th>Date</th><th>Due</th><th style="text-align:right">Amount</th><th style="text-align:center">Status</th>
+      </tr></thead>
+      <tbody>${rows || '<tr><td colspan="5" style="color:#94a3b8;text-align:center;padding:20px">No invoices on record.</td></tr>'}</tbody>
+    </table>
+    <table class="summary">
+      <tr><td>Total Invoiced</td><td>${fmt(total, c)}</td></tr>
+      <tr><td>Total Paid</td><td>${fmt(paid, c)}</td></tr>
+      <tr class="total-row"><td>Balance Outstanding</td><td>${fmt(outstanding, c)}</td></tr>
+    </table>
+    </body></html>`;
+
+    try {
+      const fileName = `statement-${cu.name.replace(/\s+/g, "-").toLowerCase()}-${new Date().toISOString().slice(0, 10)}.pdf`;
+      await window.electronAPI.printStatement({ html, fileName });
+      showToast("Statement saved to Downloads");
+    } catch (err) { showToast(`Failed: ${err.message}`, "error"); }
+  };
+
   return (
     <div>
       <PageHeader title="Customers" subtitle={`${data.customers.length} customers`}
@@ -911,7 +1116,8 @@ function Customers({ data, setData, showToast, currency: c = "CAD" }) {
               display: "flex", alignItems: "center", gap: 12 }}>
               <Btn variant="ghost" size="sm" onClick={() => setDetail(null)}>← Back</Btn>
               <h2 style={{ margin: 0, fontSize: 16, fontWeight: 700 }}>{detail.name}</h2>
-              <div style={{ marginLeft: "auto" }}>
+              <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
+                {isElectron && <Btn variant="secondary" size="sm" onClick={() => printStatement(detail)}>↓ Statement PDF</Btn>}
                 <Btn variant="secondary" size="sm" onClick={() => openEdit(detail)}>Edit</Btn>
               </div>
             </div>
@@ -984,7 +1190,7 @@ function Customers({ data, setData, showToast, currency: c = "CAD" }) {
 }
 
 // ─── INVOICES ─────────────────────────────────────────────────────────────────
-function Invoices({ data, setData, showToast, currency: c = "CAD" }) {
+function Invoices({ data, setData, showToast, currency: c = "CAD", settings }) {
   const [filter, setFilter] = useState("all");
   const [modal, setModal] = useState(null);
   const [detail, setDetail] = useState(null);
@@ -1077,6 +1283,24 @@ function Invoices({ data, setData, showToast, currency: c = "CAD" }) {
   const updateItem = (idx, field, val) => setForm(f => ({ ...f, items: f.items.map((it, i) => i === idx ? { ...it, [field]: val } : it) }));
   const removeItem = idx => setForm(f => ({ ...f, items: f.items.filter((_, i) => i !== idx) }));
 
+  const duplicateInvoice = (inv) => {
+    const newId = nextId();
+    const today = new Date().toISOString().slice(0, 10);
+    const due = new Date(); due.setDate(due.getDate() + 30);
+    const copy = { ...inv, id: newId, date: today, due: due.toISOString().slice(0, 10), status: "unpaid" };
+    setData(d => ({ ...d, invoices: [copy, ...d.invoices] }));
+    showToast(`Duplicated as ${newId}`);
+    setDetail(copy);
+  };
+
+  const exportInvoicesCSV = async () => {
+    if (!isElectron) return showToast("CSV export only available in the desktop app", "error");
+    try {
+      const path = await window.electronAPI.exportCSV("invoices");
+      showToast(`Exported to ${path.split("/").pop()}`);
+    } catch (err) { showToast(`Export failed: ${err.message}`, "error"); }
+  };
+
   const TABS = [
     { key: "all", label: "All" },
     { key: "unpaid", label: "Unpaid" },
@@ -1088,12 +1312,16 @@ function Invoices({ data, setData, showToast, currency: c = "CAD" }) {
     <div>
       <PageHeader title="Invoicing"
         subtitle={`${data.invoices.filter(i => i.status !== "paid").length} open invoices`}
-        action={<Btn onClick={() => {
+        action={<div style={{ display: "flex", gap: 8 }}>
+          <Btn variant="secondary" size="sm" onClick={exportInvoicesCSV}>↓ CSV</Btn>
+          <Btn onClick={() => {
           const today = new Date().toISOString().slice(0, 10);
           const due = new Date(); due.setDate(due.getDate() + 30);
-          setForm({ customer_id: data.customers[0]?.id || "", date: today, due: due.toISOString().slice(0, 10), terms: "30", tax_rate: "13", notes: "", items: [{ desc: "", qty: 1, price: 0 }] });
+          const defaultTax = String(settings?.default_tax_rate ?? 13);
+          setForm({ customer_id: data.customers[0]?.id || "", date: today, due: due.toISOString().slice(0, 10), terms: "30", tax_rate: defaultTax, notes: "", items: [{ desc: "", qty: 1, price: 0 }] });
           setModal(true);
-        }}>+ New Invoice</Btn>} />
+        }}>+ New Invoice</Btn>
+        </div>} />
       <div style={{ padding: "0 32px 32px" }}>
         {detail ? (
           <Card>
@@ -1103,11 +1331,12 @@ function Invoices({ data, setData, showToast, currency: c = "CAD" }) {
               <h2 style={{ margin: 0, fontSize: 16, fontWeight: 700 }}>{detail.id}</h2>
               <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
                 {detail.status !== "paid" && <Btn size="sm" onClick={() => markPaid(detail)}>Mark as Paid</Btn>}
+                <Btn variant="ghost" size="sm" onClick={() => duplicateInvoice(detail)}>⧉ Duplicate</Btn>
                 <Btn variant="secondary" size="sm" onClick={() => emailInvoice(detail)} style={{ opacity: emailLoading ? 0.6 : 1 }}>
-                  {emailLoading ? "Sending…" : "✉ Email Invoice"}
+                  {emailLoading ? "Sending…" : "✉ Email"}
                 </Btn>
                 <Btn variant="secondary" size="sm" onClick={() => downloadPDF(detail)} style={{ opacity: pdfLoading ? 0.6 : 1 }}>
-                  {pdfLoading ? "Generating…" : "↓ Download PDF"}
+                  {pdfLoading ? "Generating…" : "↓ PDF"}
                 </Btn>
               </div>
             </div>
@@ -2080,6 +2309,121 @@ function Integrations({ showToast }) {
           </div>
         </div>
 
+      </div>
+    </div>
+  );
+}
+
+// ─── SETTINGS ─────────────────────────────────────────────────────────────────
+const CA_PROVINCES = [
+  { label: "No tax (0%)", value: 0 },
+  { label: "GST — 5%", value: 5 },
+  { label: "Ontario HST — 13%", value: 13 },
+  { label: "BC PST+GST — 12%", value: 12 },
+  { label: "Québec QST+GST — 14.975%", value: 14.975 },
+  { label: "Atlantic HST — 15%", value: 15 },
+];
+const CURRENCIES = ["CAD", "USD", "EUR", "GBP", "AUD"];
+const FISCAL_MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+
+function Settings({ settings, setSettings, data, setData, showToast, onOpenLicense }) {
+  const [form, setForm] = useState({
+    company: settings?.company || "",
+    currency: settings?.currency || "CAD",
+    fiscal_year_start: settings?.fiscal_year_start || "January",
+    default_tax_rate: settings?.default_tax_rate ?? 13,
+    email: settings?.email || "",
+    phone: settings?.phone || "",
+    address: settings?.address || "",
+  });
+  const [saved, setSaved] = useState(false);
+  const [licenseStatus, setLicenseStatus] = useState(null);
+
+  useEffect(() => {
+    if (!isElectron) return;
+    window.electronAPI.getLicenseStatus().then(setLicenseStatus).catch(() => {});
+  }, []);
+
+  const save = () => {
+    setSettings(form);
+    setData(d => ({ ...d, company: { ...d.company, name: form.company, currency: form.currency, fiscal_year_start: form.fiscal_year_start } }));
+    setSaved(true);
+    showToast("Settings saved");
+    setTimeout(() => setSaved(false), 2000);
+  };
+
+  return (
+    <div>
+      <PageHeader title="Settings" subtitle="Company info, preferences, and licensing" />
+      <div style={{ padding: "0 32px 24px", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20, alignItems: "start" }}>
+
+        {/* Company Info */}
+        <Card style={{ padding: 24 }}>
+          <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 20 }}>Company</div>
+          <Field label="Company Name"><Input value={form.company} onChange={v => setForm({ ...form, company: v })} placeholder="Your Business Name" /></Field>
+          <Field label="Email"><Input value={form.email} onChange={v => setForm({ ...form, email: v })} placeholder="hello@yourco.com" /></Field>
+          <Field label="Phone"><Input value={form.phone} onChange={v => setForm({ ...form, phone: v })} placeholder="416-555-0000" /></Field>
+          <Field label="Address"><Textarea value={form.address} onChange={v => setForm({ ...form, address: v })} placeholder="123 Main St, Toronto ON M5V 1A1" /></Field>
+        </Card>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+          {/* Preferences */}
+          <Card style={{ padding: 24 }}>
+            <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 20 }}>Preferences</div>
+            <Field label="Currency">
+              <Select value={form.currency} onChange={v => setForm({ ...form, currency: v })}
+                options={CURRENCIES.map(c => ({ value: c, label: c }))} />
+            </Field>
+            <Field label="Fiscal Year Start">
+              <Select value={form.fiscal_year_start} onChange={v => setForm({ ...form, fiscal_year_start: v })}
+                options={FISCAL_MONTHS.map(m => ({ value: m, label: m }))} />
+            </Field>
+            <Field label="Default Tax Rate">
+              <Select value={form.default_tax_rate} onChange={v => setForm({ ...form, default_tax_rate: parseFloat(v) })}
+                options={CA_PROVINCES.map(p => ({ value: p.value, label: p.label }))} />
+            </Field>
+          </Card>
+
+          {/* License */}
+          <Card style={{ padding: 24 }}>
+            <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 16 }}>License</div>
+            {licenseStatus?.licensed ? (
+              <div>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                  <span style={{ color: "#16a34a", fontSize: 18 }}>✓</span>
+                  <span style={{ fontSize: 13, fontWeight: 600, color: "#16a34a" }}>Licensed</span>
+                </div>
+                <div style={{ fontSize: 12, color: "#64748b" }}>
+                  {licenseStatus.license?.email && <div>Registered to: {licenseStatus.license.email}</div>}
+                  {licenseStatus.license?.activatedAt && <div>Activated: {licenseStatus.license.activatedAt.slice(0, 10)}</div>}
+                </div>
+                <button style={{ marginTop: 12, background: "none", border: "none", color: "#dc2626",
+                  fontSize: 12, cursor: "pointer", padding: 0 }}
+                  onClick={async () => {
+                    if (!isElectron) return;
+                    const status = await window.electronAPI.deactivateLicense();
+                    setLicenseStatus(status);
+                    showToast("License deactivated");
+                  }}>
+                  Deactivate license
+                </button>
+              </div>
+            ) : (
+              <div>
+                <div style={{ fontSize: 13, color: "#64748b", marginBottom: 14 }}>
+                  {licenseStatus?.trial
+                    ? `Trial — ${licenseStatus.daysLeft} day${licenseStatus.daysLeft !== 1 ? "s" : ""} remaining`
+                    : "Trial expired"}
+                </div>
+                <Btn onClick={onOpenLicense}>Activate or Buy License</Btn>
+              </div>
+            )}
+          </Card>
+        </div>
+      </div>
+
+      <div style={{ padding: "0 32px 32px", display: "flex", justifyContent: "flex-end" }}>
+        <Btn onClick={save} style={{ minWidth: 140 }}>{saved ? "✓ Saved" : "Save Settings"}</Btn>
       </div>
     </div>
   );

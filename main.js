@@ -6,6 +6,15 @@ const http = require("http");
 const crypto = require("crypto");
 const { URL, URLSearchParams } = require("url");
 
+// ─── Paddle licensing config ──────────────────────────────────────────────────
+// Set these via environment variables or replace with your real Paddle values:
+//   https://vendors.paddle.com → Products → your product
+const PADDLE_VENDOR_ID     = process.env.PADDLE_VENDOR_ID     || "YOUR_VENDOR_ID";
+const PADDLE_PRODUCT_ID    = process.env.PADDLE_PRODUCT_ID    || "YOUR_PRODUCT_ID";
+const PADDLE_VENDOR_AUTH   = process.env.PADDLE_VENDOR_AUTH   || "YOUR_VENDOR_AUTH_CODE";
+const PADDLE_CHECKOUT_URL  = `https://buy.paddle.com/product/${PADDLE_PRODUCT_ID}`;
+const TRIAL_DAYS           = 30;
+
 // ─── Google OAuth config ─────────────────────────────────────────────────────
 // Replace these with your real values from Google Cloud Console:
 //   https://console.cloud.google.com → APIs & Services → Credentials
@@ -31,8 +40,15 @@ async function initStore() {
       settings: null,
       erpData: null,
       googleTokens: null,
+      license: null,          // { key, email, activatedAt, status }
+      trialStartedAt: null,   // ISO date string, set on first launch
     },
   });
+
+  // Start trial clock on first ever launch
+  if (!store.get("trialStartedAt")) {
+    store.set("trialStartedAt", new Date().toISOString());
+  }
 }
 
 // ─── Google OAuth helpers ────────────────────────────────────────────────────
@@ -244,6 +260,40 @@ async function driveRestore(fileId) {
   return { restoredAt: data.backedUpAt };
 }
 
+// ─── Paddle licensing helpers ─────────────────────────────────────────────────
+function getLicenseStatus() {
+  const license = store.get("license");
+  if (license?.status === "active") return { licensed: true, trial: false, license };
+
+  const trialStart = store.get("trialStartedAt");
+  if (!trialStart) return { licensed: false, trial: false, daysLeft: 0 };
+
+  const elapsed = Date.now() - new Date(trialStart).getTime();
+  const daysLeft = Math.max(0, TRIAL_DAYS - Math.floor(elapsed / 86_400_000));
+  return { licensed: false, trial: true, daysLeft, trialStart };
+}
+
+async function activateLicense(licenseKey, email) {
+  // Validate with Paddle's license verification API
+  const res = await fetch("https://vendors.paddle.com/api/2.0/license/verify", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      vendor_id: PADDLE_VENDOR_ID,
+      vendor_auth_code: PADDLE_VENDOR_AUTH,
+      license_code: licenseKey,
+      product_id: PADDLE_PRODUCT_ID,
+    }),
+  });
+  const data = await res.json();
+
+  if (!data.success) throw new Error(data.error?.message || "License validation failed");
+
+  const licenseData = { key: licenseKey, email, activatedAt: new Date().toISOString(), status: "active", paddleData: data.response };
+  store.set("license", licenseData);
+  return licenseData;
+}
+
 // ─── electron-updater ────────────────────────────────────────────────────────
 let autoUpdater;
 async function initUpdater(win) {
@@ -286,6 +336,22 @@ function registerIPC() {
   });
 
   // PDF export
+  ipcMain.handle("pdf:statement", async (_e, { html, fileName }) => {
+    const tmpHtml = path.join(os.tmpdir(), `mise-statement-${Date.now()}.html`);
+    fs.writeFileSync(tmpHtml, html, "utf8");
+
+    const win = new BrowserWindow({ show: false, webPreferences: { nodeIntegration: false, contextIsolation: true } });
+    await win.loadFile(tmpHtml);
+    const pdfData = await win.webContents.printToPDF({ marginsType: 1, pageSize: "Letter", printBackground: true });
+    win.close();
+    fs.unlinkSync(tmpHtml);
+
+    const filePath = path.join(os.homedir(), "Downloads", fileName);
+    fs.writeFileSync(filePath, pdfData);
+    shell.showItemInFolder(filePath);
+    return filePath;
+  });
+
   ipcMain.handle("pdf:exportInvoice", async (_e, invoiceId) => {
     const win = BrowserWindow.getAllWindows()[0];
     if (!win) throw new Error("No window found");
@@ -300,6 +366,42 @@ function registerIPC() {
     const fileName = `${invoiceId}-${Date.now()}.pdf`;
     const filePath = path.join(downloadsPath, fileName);
     fs.writeFileSync(filePath, pdfData);
+    shell.showItemInFolder(filePath);
+    return filePath;
+  });
+
+  // ── Paddle Licensing ─────────────────────────────────────────────────────
+  ipcMain.handle("license:status", () => getLicenseStatus());
+  ipcMain.handle("license:activate", async (_e, { key, email }) => activateLicense(key, email));
+  ipcMain.handle("license:openCheckout", () => shell.openExternal(PADDLE_CHECKOUT_URL));
+  ipcMain.handle("license:deactivate", () => { store.delete("license"); return getLicenseStatus(); });
+
+  // ── CSV Export ───────────────────────────────────────────────────────────
+  ipcMain.handle("export:csv", async (_e, { type }) => {
+    const erpData = store.get("erpData");
+    if (!erpData) throw new Error("No data to export");
+    let csv = "";
+    if (type === "invoices") {
+      csv = "Invoice ID,Customer,Date,Due,Status,Subtotal,Tax,Total\n";
+      csv += erpData.invoices.map(inv => {
+        const cu = erpData.customers.find(c => c.id === inv.customer_id);
+        return [inv.id, `"${cu?.name || inv.customer_id}"`, inv.date, inv.due, inv.status,
+          (inv.subtotal ?? inv.total).toFixed(2), (inv.tax_amount ?? 0).toFixed(2), inv.total.toFixed(2)].join(",");
+      }).join("\n");
+    } else if (type === "expenses") {
+      csv = "Date,Vendor,Category,Amount,Notes,Receipt\n";
+      csv += erpData.expenses.map(e =>
+        [e.date, `"${e.vendor}"`, e.category, e.amount.toFixed(2), `"${e.notes || ""}"`, e.receipt ? "Yes" : "No"].join(",")
+      ).join("\n");
+    } else if (type === "customers") {
+      csv = "Name,Email,Phone,City,Status,Balance\n";
+      csv += erpData.customers.map(cu =>
+        [`"${cu.name}"`, cu.email, cu.phone, cu.city, cu.status, (cu.balance || 0).toFixed(2)].join(",")
+      ).join("\n");
+    }
+    const fileName = `mise-erp-${type}-${new Date().toISOString().slice(0, 10)}.csv`;
+    const filePath = path.join(os.homedir(), "Downloads", fileName);
+    fs.writeFileSync(filePath, csv, "utf8");
     shell.showItemInFolder(filePath);
     return filePath;
   });

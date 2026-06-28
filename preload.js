@@ -11,6 +11,16 @@ contextBridge.exposeInMainWorld("electronAPI", {
 
   // ── PDF export ──────────────────────────────────────────────────────────
   exportInvoicePDF: (invoiceId) => ipcRenderer.invoke("pdf:exportInvoice", invoiceId),
+  printStatement: (payload) => ipcRenderer.invoke("pdf:statement", payload),
+
+  // ── Paddle Licensing ────────────────────────────────────────────────────
+  getLicenseStatus: () => ipcRenderer.invoke("license:status"),
+  activateLicense: (payload) => ipcRenderer.invoke("license:activate", payload),
+  openCheckout: () => ipcRenderer.invoke("license:openCheckout"),
+  deactivateLicense: () => ipcRenderer.invoke("license:deactivate"),
+
+  // ── CSV Export ───────────────────────────────────────────────────────────
+  exportCSV: (type) => ipcRenderer.invoke("export:csv", { type }),
 
   // ── Google Auth ─────────────────────────────────────────────────────────
   getAuthStatus: () => ipcRenderer.invoke("auth:status"),
